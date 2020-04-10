@@ -1,30 +1,61 @@
-/* https://vanya.jp.net/os/haribote.html#hrb */
+/*
+Thanks to kotetuco
+https://github.com/kotetuco/ructiss/blob/master/kernel/arch/i686-unknown-linux-gnu/kernel.ld
+*/
+
+/*入力オブジェクトファイル(将来的にMakefileで定義)*/
+
+/*出力オブジェクトファイル(Makefileで定義)*/
+
 ENTRY(HariMain)
 
-OUTPUT_FORMAT("binary");
+/*出力フォーマット*/
+OUTPUT_FORMAT("binary")
 
-SECTIONS
-{
-    .head 0x0 : {
-        LONG(64 * 1024)  /*  0 : stack+.data+heap の大きさ（4KBの倍数） */
-        LONG(0x69726148)      /*  4 : シグネチャ "Hari" */
-        LONG(0)               /*  8 : mmarea の大きさ（4KBの倍数） */
-        LONG(0x310000)        /* 12 : スタック初期値＆.data転送先 */
-        LONG(SIZEOF(.data))   /* 16 : .dataサイズ */
-        LONG(LOADADDR(.data)) /* 20 : .dataの初期値列のファイル位置 */
-        LONG(0xE9000000)      /* 24 : 0xE9000000 */
-        LONG(HariMain - 0x20) /* 28 : エントリアドレス - 0x20 */
-        LONG(0)               /* 32 : heap領域（malloc領域）開始アドレス */
-    }
+/*セクション*/
+SECTIONS{
+	/*.hrbオブジェクトファイルのフォーマットに従い、ヘッダを定義*/
+	.head 0x0 :
+	{
+		LONG((ADDR(.bss) + SIZEOF(.bss) + 0xfff) & ~ 0xfff)
+		BYTE(0x48) BYTE(0x61) BYTE(0x72) BYTE(0x69)
+		LONG(0x0)
+		LONG(ADDR(.data))
+		LONG(SIZEOF(.data))
+		LONG(LOADADDR(.data))
+		LONG(0xe9000000)
+		LONG(HariMain - 0x20)
+		LONG((ADDR(.bss) + SIZEOF(.bss) + 0xf) & ~ 0xf)
+	}
 
-    .text : { *(.text) }
+	/*.textセクションのメモリ開始位置*/
+	.text ADDR(.head) + SIZEOF(.head) : SUBALIGN(1)
+	{
+		/*.textセクション全部を含む*/
+		*(.text.HariMain)
+		*(.text*)
+	}
 
-    .data 0x310000 : AT ( ADDR(.text) + SIZEOF(.text) ) {
-        *(.data)
-        *(.rodata*)
-        *(.bss)
-    }
+	/*.dataセクションのメモリ開始位置*/
+	.data 0x00000400:
+	/*.data :*/
 
-    /DISCARD/ : { *(.eh_frame) }
+	/*.dataセクションのファイル上の開始位置*/
+	AT(LOADADDR(.text) + SIZEOF(.text)) SUBALIGN(4)
+	{
+		*(.data)
+		*(.rodata*)
+	}
 
+	/*.bssセクションのメモリ開始位置(.dataセクションの終端から)*/
+	.bss :
+
+	/*.bssセクションのファイル上の開始位置*/
+	AT(LOADADDR(.data) + SIZEOF(.data)) SUBALIGN(4)
+	{
+		*(.bss)
+	}
+
+	/* 上記以外のセクションは無視する */
+	/DISCARD/ : {*(*)}
 }
