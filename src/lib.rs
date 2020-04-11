@@ -6,6 +6,7 @@ use core::panic::PanicInfo;
 
 mod vga;
 mod asm;
+mod fonts;
 
 #[no_mangle]
 fn hlt() {
@@ -20,34 +21,50 @@ fn write_mem8(addr: u32, data: u8) {
     *ptr = data;
 }
 
+struct BOOTINFO {
+    cyls: u8,
+    leds: u8,
+    vmode: u8,
+    reserve: u8,
+    scrnx: i16,
+    scrny: i16,
+    vram: &'static mut u8,
+}
+
+impl BOOTINFO {
+    pub fn new() -> BOOTINFO {
+        BOOTINFO {
+            cyls: unsafe { *(0x0ff0 as *const u8) },
+            leds: unsafe { *(0x0ff1 as *const u8) },
+            vmode: unsafe { *(0x0ff2 as *const u8) },
+            reserve: unsafe { *(0x0ff3 as *const u8) },
+            scrnx: unsafe { *(0x0ff4 as *const i16) },
+            scrny: unsafe { *(0x0ff6 as *const i16) },
+            vram: unsafe { &mut *( *(0x0ff8 as *const i32) as *mut u8) }
+        }
+    }
+}
+
 #[no_mangle]
 #[start]
 pub extern "C" fn HariMain() -> ! {
-    vga::set_palette();
-    // for i in 0xa000..0xaffff {
-    //     write_mem8(i, (i & 0x0f) as u8);
-    // }
     use vga::Color::*;
-    let vram = unsafe { &mut *(0xa0000 as *mut u8) };
-    let xsize = 320;    // 画面サイズ (320 * 200)
-    let ysize = 200;
+    use vga::Screen;
+    use vga::ScreenWriter;
+    let mut screen = Screen::new();
+    let binfo = BOOTINFO::new();
+    screen.init();
+    
+    let mut writer = ScreenWriter::new(screen, White, 10, 10);
+    use core::fmt::Write;
+    write!(writer, "ABC\nabc\n").unwrap();
+    write!(writer, "10 * 3 = {}\n", 10 * 3).unwrap();
+    write!(
+        writer,
+        "Long string Long string Long string Long string Long string Long string Long string\n"
+    )
+    .unwrap();
 
-    vga::boxfill8(vram, xsize, DarkCyan, 0, 0, xsize - 1, ysize - 29);
-	vga::boxfill8(vram, xsize, LightGray, 0, ysize - 28, xsize - 1, ysize - 28);
-	vga::boxfill8(vram, xsize, White, 0, ysize - 27, xsize - 1, ysize - 27);
-	vga::boxfill8(vram, xsize, LightGray, 0, ysize - 26, xsize - 1, ysize - 1);
-
-	vga::boxfill8(vram, xsize, White, 3, ysize - 24, 59, ysize - 24);
-	vga::boxfill8(vram, xsize, White, 2, ysize - 24, 2, ysize - 4);
-	vga::boxfill8(vram, xsize, DarkYellow, 3, ysize - 4, 59, ysize - 4);
-	vga::boxfill8(vram, xsize, DarkYellow, 59, ysize - 23, 59, ysize - 5);
-	vga::boxfill8(vram, xsize, Black,  2, ysize -  3, 59, ysize - 3);
-	vga::boxfill8(vram, xsize, Black, 60, ysize - 24, 60, ysize - 3);
-
-	vga::boxfill8(vram, xsize, DarkGray, xsize - 47, ysize - 24, xsize - 4, ysize - 24);
-	vga::boxfill8(vram, xsize, DarkGray, xsize - 47, ysize - 23, xsize - 47, ysize - 4);
-	vga::boxfill8(vram, xsize, White, xsize - 47, ysize - 3, xsize - 4, ysize - 3);
-	vga::boxfill8(vram, xsize, White, xsize - 3, ysize - 24, xsize - 3, ysize - 3);
     loop {
         hlt()
     }

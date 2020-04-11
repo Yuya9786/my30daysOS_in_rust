@@ -20,7 +20,7 @@
     20 00000000 B013                    		MOV		AL,0x13			; VGAグラフィックス、320x200x8bitカラー
     21 00000002 B400                    		MOV		AH,0x00
     22 00000004 CD10                    		INT		0x10
-    23 00000006 C606F20F08              		MOV		BYTE [VMODE],8	; 画面モードをメモする（C言語が参照する）
+    23 00000006 C606F20F08              		MOV		BYTE [VMODE],8	; 画面モードをメモ する（C言語が参照する）
     24 0000000B C706F40F4001            		MOV		WORD [SCRNX],320
     25 00000011 C706F60FC800            		MOV		WORD [SCRNY],200
     26 00000017 66C706F80F00000A00      		MOV		DWORD [VRAM],0x000a0000
