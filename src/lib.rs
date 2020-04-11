@@ -7,13 +7,8 @@ use core::panic::PanicInfo;
 mod vga;
 mod asm;
 mod fonts;
-
-#[no_mangle]
-fn hlt() {
-    unsafe {
-        asm!("hlt");
-    }
-}
+mod dsctbl;
+mod int;
 
 #[no_mangle]
 fn write_mem8(addr: u32, data: u8) {
@@ -48,14 +43,19 @@ impl BOOTINFO {
 #[no_mangle]
 #[start]
 pub extern "C" fn HariMain() -> ! {
-    use vga::Color::*;
-    use vga::Screen;
-    use vga::ScreenWriter;
+    use vga::{Color, Screen, ScreenWriter};
+    use asm::{hlt, sti};
+
+    dsctbl::init();
+    int::init_pic();
+    sti();
+    
+
     let mut screen = Screen::new();
     let binfo = BOOTINFO::new();
     screen.init();
     
-    let mut writer = ScreenWriter::new(screen, White, 10, 10);
+    let mut writer = ScreenWriter::new(screen, Color::White, 10, 10);
     use core::fmt::Write;
     write!(writer, "ABC\nabc\n").unwrap();
     write!(writer, "10 * 3 = {}\n", 10 * 3).unwrap();
@@ -65,8 +65,10 @@ pub extern "C" fn HariMain() -> ! {
     )
     .unwrap();
 
+    int::allow_input();
+
     loop {
-        hlt()
+        hlt();
     }
 }
 
@@ -74,6 +76,6 @@ pub extern "C" fn HariMain() -> ! {
 fn panic(_info: &PanicInfo) -> ! {
     // println!("{}", info);
     loop {
-        hlt()
+        asm::hlt()
     }
 }
