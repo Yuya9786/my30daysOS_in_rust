@@ -1,4 +1,7 @@
-use crate::asm::out8;
+use crate::asm::{out8,in8};
+use spin::Mutex;
+use lazy_static::lazy_static;
+use crate::fifo::FIFO8;
 
 const PIC0_ICW1: u32 = 0x0020;
 const PIC0_OCW2: u32 = 0x0020;
@@ -34,30 +37,61 @@ pub fn init_pic() {
 pub fn allow_input() {
     out8(PIC0_IMR, 0xf9); // PIC1とキーボードを許可(11111001)
     out8(PIC1_IMR, 0xef); // マウスを許可(11101111)
+    init_keyboard();
 }
 
-#[no_mangle]
+const PORT_KEYDAT: u32 = 0x60;
+const PORT_KEYSTA: u32 = 0x64;
+const PORT_KEYCMD: u32 = 0x64;
+const KEYSTA_SEND_NOTREADY: u8 = 0x02;
+const KEYCMD_WRITE_MODE: u8 = 0x60;
+const KBC_MODE: u8 = 0x47;
+const KEYCMD_SENDTO_MOUSE: u8 = 0xd4;
+const MOUSECMD_ENABLE: u8 = 0xf4;
+
+pub fn wait_KBC_sendready() {
+    // キーボードコントローラがデータ送信可能になるのを待つ
+    loop {
+        if in8(PORT_KEYSTA) & KEYSTA_SEND_NOTREADY == 0 {
+            break;
+        }
+    }
+    return;
+}
+pub fn init_keyboard() {
+    // キーボードコントローラの初期化
+    wait_KBC_sendready();
+    out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
+    wait_KBC_sendready();
+    out8(PORT_KEYDAT, KBC_MODE);
+}
+
+pub fn enable_mouse() {
+    // マウス有効
+    wait_KBC_sendready();
+    out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
+    wait_KBC_sendready();
+    out8(PORT_KEYDAT, MOUSECMD_ENABLE);
+}
+
+lazy_static! {
+    pub static ref keyfifo: Mutex<FIFO8> = Mutex::new(FIFO8::new(32));
+    pub static ref mousefifo: Mutex<FIFO8> = Mutex::new(FIFO8::new(32));
+}
+
 pub extern "C" fn inthandler21() {
-    use crate::vga::{Color, Screen, ScreenWriter};
-    let mut screen = Screen::new();
-    screen.boxfill8(Color::Black, 0, 0, 32 * 8 - 1, 15);
-    let mut writer = ScreenWriter::new(screen, Color::White, 0, 0);
-    use core::fmt::Write;
-    write!(writer, "INT 21 (IRQ-1) : PS/2 keyboard").unwrap();
-    loop {
-        crate::asm::hlt();
-    }
+    out8(PIC0_OCW2, 0x61);  // IRQ-01受付完了をPIC0に通知
+    let data = in8(PORT_KEYDAT);
+    keyfifo.lock().put(data);
 }
 
-#[no_mangle]
 pub extern "C" fn inthandler2C() {
-    use crate::vga::{Color, Screen, ScreenWriter};
-    let mut screen = Screen::new();
-    screen.boxfill8(Color::Black, 0, 0, 32 * 8 - 1, 15);
-    let mut writer = ScreenWriter::new(screen, Color::White, 0, 0);
-    use core::fmt::Write;
-    write!(writer, "INT 2C (IRQ-12) : PS/2 mouse").unwrap();
-    loop {
-        crate::asm::hlt();
-    }
+    out8(PIC1_OCW2, 0x64);  // IRQ-12受付完了をPIC1に通知
+    out8(PIC0_OCW2, 0x62);  // IRQ-02 ..     PIC0
+    let data = in8(PORT_KEYDAT);
+    mousefifo.lock().put(data);
+}
+
+pub extern "C" fn inthandler27() {
+    out8(PIC0_OCW2, 0x67);
 }

@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(asm)]
 #![feature(start)]
+#![feature(naked_functions)]
 
 use core::panic::PanicInfo;
 
@@ -9,6 +10,7 @@ mod asm;
 mod fonts;
 mod dsctbl;
 mod int;
+mod fifo;
 
 #[no_mangle]
 fn write_mem8(addr: u32, data: u8) {
@@ -42,39 +44,50 @@ impl BOOTINFO {
 
 #[no_mangle]
 #[start]
-pub extern "C" fn HariMain() -> ! {
+pub extern "C" fn HariMain() {
     use vga::{Color, Screen, ScreenWriter};
-    use asm::{hlt, sti};
+    use asm::{hlt, sti, cli, stihlt};
+    use int::{keyfifo, mousefifo};
+    use core::fmt::Write;
 
     dsctbl::init();
     int::init_pic();
     sti();
-    
-
-    let mut screen = Screen::new();
-    let binfo = BOOTINFO::new();
-    screen.init();
-    
-    let mut writer = ScreenWriter::new(screen, Color::White, 10, 10);
-    use core::fmt::Write;
-    write!(writer, "ABC\nabc\n").unwrap();
-    write!(writer, "10 * 3 = {}\n", 10 * 3).unwrap();
-    write!(
-        writer,
-        "Long string Long string Long string Long string Long string Long string Long string\n"
-    )
-    .unwrap();
-
     int::allow_input();
-
+    let mut screen = Screen::new();
+    screen.init();
+    int::enable_mouse();
     loop {
-        hlt();
+        cli();
+        if keyfifo.lock().status() + mousefifo.lock().status() == 0 {
+            stihlt();
+        } else {
+            if keyfifo.lock().status() != 0 {
+                let i = keyfifo.lock().get().unwrap();
+                sti();
+                (Screen::new()).boxfill8(Color::DarkCyan, 0, 0, 16, 16);
+                let mut writer = ScreenWriter::new(Screen::new(), Color::White, 0, 0);
+                write!(writer, "{:02x}", i).unwrap();
+            } else if mousefifo.lock().status() != 0 {
+                let i = mousefifo.lock().get().unwrap();
+                sti();
+                (Screen::new()).boxfill8(Color::DarkCyan, 32, 0, 48, 16);
+                let mut writer = ScreenWriter::new(Screen::new(), Color::White, 32, 0);
+                write!(writer, "{:02x}", i).unwrap();
+            }
+        }
     }
 }
 
+
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // println!("{}", info);
+fn panic(info: &PanicInfo) -> ! {
+    use vga::{Screen, ScreenWriter};
+    let mut screen = Screen::new();
+    screen.init();
+    let mut writer = ScreenWriter::new(screen, vga::Color::LightRed, 0, 0);
+    use core::fmt::Write;
+    write!(writer, "[ERR] {:?}", info).unwrap();
     loop {
         asm::hlt()
     }
