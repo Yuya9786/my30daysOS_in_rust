@@ -11,6 +11,7 @@ mod fonts;
 mod dsctbl;
 mod int;
 mod fifo;
+mod mouse;
 
 #[no_mangle]
 fn write_mem8(addr: u32, data: u8) {
@@ -49,6 +50,7 @@ pub extern "C" fn HariMain() {
     use asm::{hlt, sti, cli, stihlt};
     use int::{keyfifo, mousefifo};
     use core::fmt::Write;
+    use mouse::{Mouse, MOUSE_DEC, MOUSE_CURSOR_HEIGHT, MOUSE_CURSOR_WIDTH};
 
     dsctbl::init();
     int::init_pic();
@@ -57,6 +59,12 @@ pub extern "C" fn HariMain() {
     let mut screen = Screen::new();
     screen.init();
     int::enable_mouse();
+    let mdec =  MOUSE_DEC::new();   // マウスの0xfaを待っている段階へ
+    let mouse = Mouse::new(
+        (screen.scrnx as i32 - MOUSE_CURSOR_WIDTH as i32) / 2,
+        (screen.scrny as i32 - MOUSE_CURSOR_HEIGHT as i32 - 28) / 2,
+    );
+    mouse.render();
     loop {
         cli();
         if keyfifo.lock().status() + mousefifo.lock().status() == 0 {
@@ -71,9 +79,30 @@ pub extern "C" fn HariMain() {
             } else if mousefifo.lock().status() != 0 {
                 let i = mousefifo.lock().get().unwrap();
                 sti();
-                (Screen::new()).boxfill8(Color::DarkCyan, 32, 0, 48, 16);
-                let mut writer = ScreenWriter::new(Screen::new(), Color::White, 32, 0);
-                write!(writer, "{:02x}", i).unwrap();
+                if mdec.mouse_decode(i).is_some() {
+                    // データが3バイト揃ったので表示
+                    (Screen::new()).boxfill8(Color::DarkCyan, 32, 0, 32 + 15 * 8 - 1, 16);
+                    let mut writer = ScreenWriter::new(Screen::new(), Color::White, 32, 0);
+                    write!(writer, "[{}{}{} {:>4} {:>4}]", 
+                    if mdec.btn.get() & 0x01 != 0 {
+                        'L'
+                    } else {
+                        'l'
+                    },
+                    if mdec.btn.get() & 0x04 != 0 {
+                        'C'
+                    } else {
+                        'c'
+                    },
+                    if mdec.btn.get() & 0x02 != 0 {
+                        'R'
+                    } else {
+                        'r'
+                    },
+                    mdec.x.get(), mdec.y.get()
+                    ).unwrap();
+                    mouse.move_and_render(mdec.x.get(), mdec.y.get());
+                }
             }
         }
     }
