@@ -12,6 +12,7 @@ mod dsctbl;
 mod int;
 mod fifo;
 mod mouse;
+mod mem;
 
 #[no_mangle]
 fn write_mem8(addr: u32, data: u8) {
@@ -51,6 +52,7 @@ pub extern "C" fn HariMain() {
     use int::{keyfifo, mousefifo};
     use core::fmt::Write;
     use mouse::{Mouse, MOUSE_DEC, MOUSE_CURSOR_HEIGHT, MOUSE_CURSOR_WIDTH};
+    use mem::{MEMMAN, MEMMAN_ADDR};
 
     dsctbl::init();
     int::init_pic();
@@ -65,6 +67,14 @@ pub extern "C" fn HariMain() {
         (screen.scrny as i32 - MOUSE_CURSOR_HEIGHT as i32 - 28) / 2,
     );
     mouse.render();
+    let memtotal = mem::memtest(0x00400000, 0xbfffffff);
+    let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MEMMAN) };
+    *memman = MEMMAN::new();
+    memman.free(0x00001000, 0x0009e000);   // 0x00001000 - 0x0009efff
+    memman.free(0x00400000, 2);
+    memman.free(0x00400000, memtotal  - 0x00400000);
+    let mut writer = ScreenWriter::new(Screen::new(), Color::White, 0, 17);
+    write!(writer, "memory: {}MB free: {}KB", memtotal / (1024 * 1024), memman.total() / 1024).unwrap();
     loop {
         cli();
         if keyfifo.lock().status() + mousefifo.lock().status() == 0 {
