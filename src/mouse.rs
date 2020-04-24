@@ -68,13 +68,12 @@ pub const MOUSE_CURSOR_HEIGHT: usize = 16;
 
 #[derive(Debug)]
 pub struct Mouse {
-    x: Cell<i32>,
-    y: Cell<i32>,
     cursor: [[Color; MOUSE_CURSOR_WIDTH]; MOUSE_CURSOR_HEIGHT],
+    mouse_buf_addr: usize,
 }
 
 impl Mouse {
-    pub fn new(x: i32, y: i32) -> Mouse {
+    pub fn new(mouse_buf_addr: usize) -> Mouse {
         let cursor_icon: [[u8; MOUSE_CURSOR_WIDTH]; MOUSE_CURSOR_HEIGHT] = [
             *b"**************..",
             *b"*OOOOOOOOOOO*...",
@@ -107,52 +106,53 @@ impl Mouse {
         }
 
         Mouse {
-            x: Cell::new(x),
-            y: Cell::new(y),
             cursor,
+            mouse_buf_addr,
         }
     }
 
-    pub fn move_and_render(&self, x: i32, y: i32) {
-        // まず消す
-        let mut screen = Screen::new();
-        screen.boxfill8(
-            Color::DarkCyan,
-            self.x.get() as isize,
-            self.y.get() as isize,
-            (self.x.get() + MOUSE_CURSOR_WIDTH as i32 - 1) as isize,
-            (self.y.get() + MOUSE_CURSOR_HEIGHT as i32 - 1) as isize,
-        );
-        // 移動
-        let mx = self.x.get() + x;
-        let my = self.y.get() + y;
-        let xmax = screen.scrnx as i32 - MOUSE_CURSOR_WIDTH as i32;
-        let ymax = screen.scrny as i32 - MOUSE_CURSOR_HEIGHT as i32;
-        if mx < 0 {
-            self.x.set(0);
-        } else if mx > xmax {
-            self.x.set(xmax);
-        } else {
-            self.x.set(mx);
-        }
-        if my < 0 {
-            self.y.set(0);
-        } else if my > ymax {
-            self.y.set(ymax);
-        } else {
-            self.y.set(my);
-        }
-        // 現在位置で描画
-        self.render();
-    }
+    // pub fn move_and_render(&self, x: i32, y: i32) {
+    //     // まず消す
+    //     let mut screen = Screen::new();
+    //     screen.boxfill8(
+    //         Color::DarkCyan,
+    //         self.x.get() as isize,
+    //         self.y.get() as isize,
+    //         (self.x.get() + MOUSE_CURSOR_WIDTH as i32 - 1) as isize,
+    //         (self.y.get() + MOUSE_CURSOR_HEIGHT as i32 - 1) as isize,
+    //     );
+    //     // 移動
+    //     let mx = self.x.get() + x;
+    //     let my = self.y.get() + y;
+    //     let xmax = screen.scrnx as i32 - MOUSE_CURSOR_WIDTH as i32;
+    //     let ymax = screen.scrny as i32 - MOUSE_CURSOR_HEIGHT as i32;
+    //     if mx < 0 {
+    //         self.x.set(0);
+    //     } else if mx > xmax {
+    //         self.x.set(xmax);
+    //     } else {
+    //         self.x.set(mx);
+    //     }
+    //     if my < 0 {
+    //         self.y.set(0);
+    //     } else if my > ymax {
+    //         self.y.set(ymax);
+    //     } else {
+    //         self.y.set(my);
+    //     }
+    //     // 現在位置で描画
+    //     self.render();
+    // }
 
     pub fn render(&self) {
         Screen::new().putblock(
+            self.mouse_buf_addr,
+            MOUSE_CURSOR_WIDTH as isize,
             self.cursor,
             MOUSE_CURSOR_WIDTH as isize,
             MOUSE_CURSOR_HEIGHT as isize,
-            self.x.get() as isize,
-            self.y.get() as isize,
+            0,
+            0,
         );
     }
 }

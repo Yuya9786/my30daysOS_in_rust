@@ -48,7 +48,7 @@ pub enum Color {
 pub struct Screen {
     pub scrnx: i16,
     pub scrny: i16,
-    pub vram: &'static mut u8,
+    pub vram: usize,
 }
 
 
@@ -57,17 +57,19 @@ impl Screen {
         Screen {
             scrnx: unsafe { *(0x0ff4 as *const i16) },  // 画面横幅
             scrny: unsafe { *(0x0ff6 as *const i16) },  // 縦幅
-            vram: unsafe { &mut *( *(0x0ff8 as *const i32) as *mut u8) },
+            vram: unsafe { *(0x0ff8 as *const usize) },
         }
     }
 
-    pub fn init(&mut self) {
+    pub fn init(&mut self, buf: usize) {
         self.set_palette();
-        self.init_screen();
+        self.init_screen(buf);
     }
 
     pub fn putblock(
         &mut self,
+        buf: usize,
+        bxsize: isize,  // バッファの幅
         image: [[Color; 16]; 16],
         pxsize: isize,
         pysize: isize,
@@ -76,10 +78,7 @@ impl Screen {
     ) {
         for y in 0..pysize {
             for x in 0..pxsize {
-                let ptr = unsafe {
-                    &mut *((self.vram as *mut u8)
-                        .offset((py0 + y) * (self.scrnx as isize) + (px0 + x)))
-                };
+                let ptr = unsafe { &mut *((buf as isize + (py0 + y) * bxsize + (px0 + x)) as *mut u8) };
                 *ptr = image[y as usize][x as usize] as u8;
             }
         }
@@ -98,41 +97,39 @@ impl Screen {
         asm::store_eflags(eflags);
     }
 
-    pub fn init_screen(&mut self) {
+    pub fn init_screen(&mut self, buf: usize) {
         use Color::*;
         let xsize = self.scrnx as isize;
         let ysize = self.scrny as isize;
 
-        self.boxfill8(DarkCyan, 0, 0, xsize - 1, ysize - 29);
-        self.boxfill8(LightGray, 0, ysize - 28, xsize - 1, ysize - 28);
-        self.boxfill8(White, 0, ysize - 27, xsize - 1, ysize - 27);
-        self.boxfill8(LightGray, 0, ysize - 26, xsize - 1, ysize - 1);
+        self.boxfill8(buf, DarkCyan, 0, 0, xsize - 1, ysize - 29);
+        self.boxfill8(buf, LightGray, 0, ysize - 28, xsize - 1, ysize - 28);
+        self.boxfill8(buf, White, 0, ysize - 27, xsize - 1, ysize - 27);
+        self.boxfill8(buf, LightGray, 0, ysize - 26, xsize - 1, ysize - 1);
     
-        self.boxfill8(White, 3, ysize - 24, 59, ysize - 24);
-        self.boxfill8(White, 2, ysize - 24, 2, ysize - 4);
-        self.boxfill8(DarkYellow, 3, ysize - 4, 59, ysize - 4);
-        self.boxfill8(DarkYellow, 59, ysize - 23, 59, ysize - 5);
-        self.boxfill8(Black,  2, ysize -  3, 59, ysize - 3);
-        self.boxfill8(Black, 60, ysize - 24, 60, ysize - 3);
+        self.boxfill8(buf, White, 3, ysize - 24, 59, ysize - 24);
+        self.boxfill8(buf, White, 2, ysize - 24, 2, ysize - 4);
+        self.boxfill8(buf, DarkYellow, 3, ysize - 4, 59, ysize - 4);
+        self.boxfill8(buf, DarkYellow, 59, ysize - 23, 59, ysize - 5);
+        self.boxfill8(buf, Black,  2, ysize -  3, 59, ysize - 3);
+        self.boxfill8(buf, Black, 60, ysize - 24, 60, ysize - 3);
     
-        self.boxfill8(DarkGray, xsize - 47, ysize - 24, xsize - 4, ysize - 24);
-        self.boxfill8(DarkGray, xsize - 47, ysize - 23, xsize - 47, ysize - 4);
-        self.boxfill8(White, xsize - 47, ysize - 3, xsize - 4, ysize - 3);
-        self.boxfill8(White, xsize - 3, ysize - 24, xsize - 3, ysize - 3);
+        self.boxfill8(buf, DarkGray, xsize - 47, ysize - 24, xsize - 4, ysize - 24);
+        self.boxfill8(buf, DarkGray, xsize - 47, ysize - 23, xsize - 47, ysize - 4);
+        self.boxfill8(buf, White, xsize - 47, ysize - 3, xsize - 4, ysize - 3);
+        self.boxfill8(buf, White, xsize - 3, ysize - 24, xsize - 3, ysize - 3);
     }
 
-    pub fn boxfill8(&mut self, c: Color, x0: isize, y0: isize, x1: isize, y1: isize) { // x0..x1, y0..y1の範囲で四角を出力する
+    pub fn boxfill8(&mut self, buf: usize, c: Color, x0: isize, y0: isize, x1: isize, y1: isize) { // x0..x1, y0..y1の範囲で四角を出力する
         for y in y0..y1+1 {
             for x in x0..x1+1 {
-                let ptr = unsafe {
-                    &mut *((self.vram as *mut u8).offset(y * self.scrnx as isize + x))
-                };
+                let ptr = unsafe { &mut *((buf as isize + y * self.scrnx as isize + x) as *mut u8) };
                 *ptr = c as u8;
             }
         }
     }
 
-    pub fn print_char(&mut self, color: Color, x: isize, y: isize, font: u8) {
+    pub fn print_char(&mut self, buf: usize, color: Color, x: isize, y: isize, font: u8) {
         let font = FONTS[font as usize];
         let color = color as u8;
         let xsize = self.scrnx as isize;
@@ -141,7 +138,7 @@ impl Screen {
             for x in 0..FONT_WIDTH {
                 if font[y][x] == '*' {
                     let cell = (y * xsize as usize + x) as isize;
-                    let ptr = unsafe { &mut *((self.vram as *mut u8).offset(cell + offset)) };
+                    let ptr = unsafe { &mut *((buf as isize + cell + offset) as *mut u8) };
                     *ptr = color;
                 }
             }
@@ -152,6 +149,7 @@ impl Screen {
 
 
 pub struct ScreenWriter {
+    buf_addr: Option<usize>,
     initial_x: usize,
     x: usize,
     y: usize,
@@ -160,8 +158,9 @@ pub struct ScreenWriter {
 }
 
 impl ScreenWriter {
-    pub fn new(screen: Screen, color: Color, x: usize, y: usize) -> ScreenWriter {
+    pub fn new(buf_addr: Option<usize>, screen: Screen, color: Color, x: usize, y: usize) -> ScreenWriter {
         ScreenWriter {
+            buf_addr: buf_addr,
             initial_x: x,
             x,
             y,
@@ -186,14 +185,19 @@ impl fmt::Write for ScreenWriter {
                 self.newline();
                 return Ok(());
             }
+            let buf_addr = if let Some(b) = self.buf_addr {
+                b
+            } else {
+                self.screen.vram
+            };
             if self.x + FONT_WIDTH < width && self.y + FONT_HEIGHT < height {
                 self.screen
-                    .print_char(self.color, self.x as isize, self.y as isize, str_bytes[i]);
+                    .print_char(buf_addr, self.color, self.x as isize, self.y as isize, str_bytes[i]);
             } else if self.y + FONT_HEIGHT * 2 < height {
                 // 1行ずらせば入る場合は1行ずらしてから表示
                 self.newline();
                 self.screen
-                    .print_char(self.color, self.x as isize, self.y as isize, str_bytes[i]);
+                    .print_char(buf_addr, self.color, self.x as isize, self.y as isize, str_bytes[i]);
             }
             // 次の文字用の位置に移動
             if self.x + FONT_WIDTH < width {

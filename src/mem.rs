@@ -128,6 +128,16 @@ impl MEMMAN {
         self.lostsize += size;
         return -1;  // 失敗
     }
+
+    pub fn alloc_4k(&mut self, size: u32) -> u32 {
+        let size = (size + 0xfff) & 0xfffff000;
+        self.alloc(size)
+    }
+
+    pub fn free_4k(&mut self, addr: u32, size: u32) -> i32 {
+        let size = (size + 0xfff) & 0xfffff000;
+        self.free(addr, size)
+    }
 }
 
 pub fn memtest(start: u32, end: u32) -> u32 {
