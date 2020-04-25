@@ -148,7 +148,7 @@ pub fn memtest(start: u32, end: u32) -> u32 {
     eflg |= EFLAGS_AC_BIT;  // AC-bit = 1
     store_eflags(eflg as i32);
     eflg = load_eflags() as u32;
-    if ((eflg & EFLAGS_AC_BIT) != 0) {
+    if eflg & EFLAGS_AC_BIT != 0 {
         // 386ではAC=1にしても自動で0に戻ってしまう
         flg486 = 1;
     }

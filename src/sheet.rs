@@ -1,3 +1,4 @@
+use crate::binfo;
 use crate::vga::{Color};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +44,8 @@ impl SHEET {
 const MAX_SHEETS: usize = 256;
 
 pub struct SHTCTL {
-    pub vram: &'static mut u8,
+    pub vram: usize,
+    pub map: usize,
     pub xsize: i32,
     pub ysize: i32,
     pub top: Option<usize>,
@@ -53,11 +55,12 @@ pub struct SHTCTL {
 }
 
 impl SHTCTL {
-    pub fn new(vram: &'static mut u8, xsize: i32, ysize: i32) -> SHTCTL {
+    pub fn new(map: usize) -> SHTCTL {
         SHTCTL {
-            vram: vram,
-            xsize: xsize,
-            ysize: ysize,
+            vram: binfo.vram,
+            map: map,
+            xsize: binfo.scrnx as i32,
+            ysize: binfo.scrny as i32,
             top: None,
             sheets: [0; MAX_SHEETS],
             sheets_data: [SHEET::new(); MAX_SHEETS],
@@ -96,6 +99,8 @@ impl SHTCTL {
         self.sheets_data[sheet_index].height = height;  // 高さを設定
 
         // 以下は主にsheets[]の並び替え
+        let mut a: usize = 0;
+        let mut b: usize = 0;
         if let Some(old) = old {
             if let Some(height) = height {
                 if old > height {   // 以前よりも低くなる
@@ -107,6 +112,8 @@ impl SHTCTL {
                         h -= 1;
                     }
                     self.sheets[height] = sheet_index;
+                    a = height;
+                    b = old;
                 } else if old < height {    // 以前よりも高くなる
                     // 間のものを押し下げる
                     let mut h = old;
@@ -116,6 +123,8 @@ impl SHTCTL {
                         h += 1;
                     }
                     self.sheets[height] = sheet_index;
+                    a = height;
+                    b = height;
                 }
             } else {    // 非表示化
                 if let Some(top) = self.top {
@@ -134,6 +143,8 @@ impl SHTCTL {
                         None
                     };
                 }
+                a = 0;
+                b = old - 1;
             }
         } else {    // 非表示から表示状態へ
             // 上になるものを持ち上げる
@@ -152,22 +163,33 @@ impl SHTCTL {
                 } else {
                     self.top = Some(0);
                 }
+                a = height;
+                b = height;
+            } else {
+                return;
             }
         }
-        let sht = &self.sheets_data[sheet_index];
-        self.refresh(sheet_index, sht.vx0, sht.vy0, sht.vx0 + sht.bxsize as i32, sht.vy0 + sht.bysize as i32);     // 
+
+        let sht = self.sheets_data[sheet_index];
+        self.refreshmap(sht.vx0, sht.vy0, sht.vx0 + sht.bxsize as i32, sht.vy0 + sht.bysize as i32, a);
+        self.refreshsub(sht.vx0, sht.vy0, sht.vx0 + sht.bxsize as i32, sht.vy0 + sht.bysize as i32, a, b);     // 
     }
 
     pub fn refresh(&mut self, sheet_index: usize, bx0: i32, by0: i32, bx1: i32, by1: i32) {
         if let Some(height) = self.sheets_data[sheet_index].height {
             let sht = &self.sheets_data[sheet_index];
-            self.refreshsub(sht.vx0 + bx0, sht.vy0 + by0, sht.vx0 + bx1, sht.vy0 + by1);
+            self.refreshsub(sht.vx0 + bx0, sht.vy0 + by0, sht.vx0 + bx1, sht.vy0 + by1, height, height);
         }
     }
 
-    pub fn refreshsub(&mut self, vx0: i32, vy0: i32, vx1: i32, vy1: i32) {
+    pub fn refreshsub(&mut self, vx0: i32, vy0: i32, vx1: i32, vy1: i32, h0: usize, h1: usize) {
+        let vx0 = core::cmp::max(0, vx0);
+        let vy0 = core::cmp::max(0, vy0);
+        let vx1 = core::cmp::min(vx1, self.xsize as i32);
+        let vy1 = core::cmp::min(vy1, self.ysize as i32);
         if let Some(top) = self.top {
-            for h in 0..=top {
+            for h in h0..=h1 {
+                let sid = self.sheets[h];
                 let sht = &self.sheets_data[self.sheets[h]];
                 let buf = sht.buf;
                 let bx0 = if vx0 > sht.vx0 { vx0 - sht.vx0 } else { 0 } as usize;
@@ -186,8 +208,11 @@ impl SHTCTL {
                     let vy = sht.vy0 + by as i32;
                     for bx in bx0..bx1 {
                         let vx = sht.vx0 + bx as i32;
-                        let c = unsafe { *((buf + by * sht.bxsize + bx) as *const Color) };
-                        if Some(c) != sht.col_inv {
+                        let map_sid = unsafe {
+                            *((self.map as *mut u8).offset((vy * self.xsize + vx) as isize))
+                        };
+                        if sid == map_sid as usize {
+                            let c = unsafe { *((buf + by * sht.bxsize + bx) as *const Color) };
                             unsafe {
                                 *((self.vram as *mut u8).offset((vy * self.xsize + vx) as isize)) = c as u8;
                             }
@@ -207,8 +232,10 @@ impl SHTCTL {
         if let Some(h) = sht.height {    // もしも表示中なら
             let bxsize = sht.bxsize as i32;
             let bysize = sht.bysize as i32;
-            self.refreshsub(old_vx0, old_vy0, old_vx0 + bxsize, old_vy0 + bysize);
-            self.refreshsub(x, y, x + bxsize, y + bysize);
+            self.refreshmap(old_vx0, old_vy0, old_vx0 + bxsize, old_vy0 + bysize, 0);
+            self.refreshmap(x, y, x + bxsize, y + bysize, h);
+            self.refreshsub(old_vx0, old_vy0, old_vx0 + bxsize, old_vy0 + bysize, 0, h - 1);
+            self.refreshsub(x, y, x + bxsize, y + bysize, h, h);
         }
     }
 
@@ -217,5 +244,46 @@ impl SHTCTL {
             self.updown(sheet_index, None);   // 表示中なら非表示にする
         }
         self.sheets_data[sheet_index].flags = SheetFlag::AVAILABLE; // 未使用マーク
+    }
+
+    pub fn refreshmap(&mut self, vx0: i32, vy0: i32, vx1: i32, vy1: i32, h0: usize) {
+        if self.top.is_none() {
+            return;
+        }
+
+        let vx0 = core::cmp::max(0, vx0);
+        let vy0 = core::cmp::max(0, vy0);
+        let vx1 = core::cmp::min(vx1, self.xsize as i32);
+        let vy1 = core::cmp::min(vy1, self.ysize as i32);
+
+        for h in h0..=self.top.unwrap() {
+            let sid = self.sheets[h];
+            let sht = &self.sheets_data[self.sheets[h]];
+            let buf = sht.buf;
+            let bx0 = if vx0 > sht.vx0 { vx0 - sht.vx0 } else { 0 } as usize;
+            let by0 = if vy0 > sht.vy0 { vy0 - sht.vy0 } else { 0 } as usize;
+            let bx1 = if vx1 > sht.vx0 {
+                core::cmp::min(vx1 - sht.vx0, sht.bxsize as i32)
+            } else {
+                0
+            } as usize;
+            let by1 = if vy1 > sht.vy0 {
+                core::cmp::min(vy1 - sht.vy0, sht.bysize as i32)
+            } else {
+                0
+            } as usize;
+            for by in by0..by1 {
+                let vy = sht.vy0 + by as i32;
+                for bx in bx0..bx1 {
+                    let vx = sht.vx0 + bx as i32;
+                    let c = unsafe { *((buf + by * sht.bxsize + bx) as *const Color) };
+                    if Some(c) != sht.col_inv {
+                        unsafe {
+                            *((self.map as *mut u8).offset((vy * self.xsize + vx) as isize)) = sid as u8;
+                        }
+                    }
+                }
+            }
+        }        
     }
 }

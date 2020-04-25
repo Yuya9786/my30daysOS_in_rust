@@ -1,4 +1,5 @@
-use crate::vga::{Color, Screen};
+use crate::vga;
+use crate::vga::Color;
 use core::cell::{Cell, RefCell};
 
 #[derive(Debug)]
@@ -145,7 +146,7 @@ impl Mouse {
     // }
 
     pub fn render(&self) {
-        Screen::new().putblock(
+        vga::putblock(
             self.mouse_buf_addr,
             MOUSE_CURSOR_WIDTH as isize,
             self.cursor,

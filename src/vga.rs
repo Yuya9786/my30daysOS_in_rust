@@ -1,3 +1,4 @@
+use crate::binfo;
 use crate::asm;
 use crate::fonts::*;
 use core::fmt;
@@ -44,128 +45,168 @@ pub enum Color {
     DarkGray = 15,
 }
 
-#[derive(Debug)]
-pub struct Screen {
-    pub scrnx: i16,
-    pub scrny: i16,
-    pub vram: usize,
+pub fn putblock(
+    buf: usize,
+    bxsize: isize,  // バッファの幅
+    image: [[Color; 16]; 16],
+    pxsize: isize,
+    pysize: isize,
+    px0: isize,
+    py0: isize,
+) {
+    for y in 0..pysize {
+        for x in 0..pxsize {
+            let ptr = unsafe { &mut *((buf as isize + (py0 + y) * bxsize + (px0 + x)) as *mut u8) };
+            *ptr = image[y as usize][x as usize] as u8;
+        }
+    }
 }
 
+pub fn set_palette() {
+    let eflags = asm::load_eflags();
+    asm::cli();
+    asm::out8(0x03c8, 0);
+    for i in 0..16 {
+        // 書き込むときは上位2ビットを0にしないといけない
+        asm::out8(0x03c9, COLOR_PALETTE[i][0] / 4);
+        asm::out8(0x03c9, COLOR_PALETTE[i][1] / 4);
+        asm::out8(0x03c9, COLOR_PALETTE[i][2] / 4);
+    }
+    asm::store_eflags(eflags);
+}
 
-impl Screen {
-    pub fn new() -> Screen {
-        Screen {
-            scrnx: unsafe { *(0x0ff4 as *const i16) },  // 画面横幅
-            scrny: unsafe { *(0x0ff6 as *const i16) },  // 縦幅
-            vram: unsafe { *(0x0ff8 as *const usize) },
+pub fn init_screen(buf: usize) {
+    use Color::*;
+    let xsize = binfo.scrnx as isize;
+    let ysize = binfo.scrny as isize;
+
+    boxfill8(buf, xsize, DarkCyan, 0, 0, xsize - 1, ysize - 29);
+    boxfill8(buf, xsize, LightGray, 0, ysize - 28, xsize - 1, ysize - 28);
+    boxfill8(buf, xsize, White, 0, ysize - 27, xsize - 1, ysize - 27);
+    boxfill8(buf, xsize, LightGray, 0, ysize - 26, xsize - 1, ysize - 1);
+
+    boxfill8(buf, xsize, White, 3, ysize - 24, 59, ysize - 24);
+    boxfill8(buf, xsize, White, 2, ysize - 24, 2, ysize - 4);
+    boxfill8(buf, xsize, DarkYellow, 3, ysize - 4, 59, ysize - 4);
+    boxfill8(buf, xsize, DarkYellow, 59, ysize - 23, 59, ysize - 5);
+    boxfill8(buf, xsize, Black,  2, ysize -  3, 59, ysize - 3);
+    boxfill8(buf, xsize, Black, 60, ysize - 24, 60, ysize - 3);
+
+    boxfill8(buf, xsize, DarkGray, xsize - 47, ysize - 24, xsize - 4, ysize - 24);
+    boxfill8(buf, xsize, DarkGray, xsize - 47, ysize - 23, xsize - 47, ysize - 4);
+    boxfill8(buf, xsize, White, xsize - 47, ysize - 3, xsize - 4, ysize - 3);
+    boxfill8(buf, xsize, White, xsize - 3, ysize - 24, xsize - 3, ysize - 3);
+}
+
+pub fn boxfill8(buf: usize, bxsize: isize, c: Color, x0: isize, y0: isize, x1: isize, y1: isize) { // x0..x1, y0..y1の範囲で四角を出力する
+    for y in y0..y1+1 {
+        for x in x0..x1+1 {
+            let ptr = unsafe { &mut *((buf as isize + y * bxsize + x) as *mut u8) };
+            *ptr = c as u8;
         }
     }
+}
 
-    pub fn init(&mut self, buf: usize) {
-        self.set_palette();
-        self.init_screen(buf);
-    }
-
-    pub fn putblock(
-        &mut self,
-        buf: usize,
-        bxsize: isize,  // バッファの幅
-        image: [[Color; 16]; 16],
-        pxsize: isize,
-        pysize: isize,
-        px0: isize,
-        py0: isize,
-    ) {
-        for y in 0..pysize {
-            for x in 0..pxsize {
-                let ptr = unsafe { &mut *((buf as isize + (py0 + y) * bxsize + (px0 + x)) as *mut u8) };
-                *ptr = image[y as usize][x as usize] as u8;
-            }
-        }
-    }
-
-    pub fn set_palette(&self) {
-        let eflags = asm::load_eflags();
-        asm::cli();
-        asm::out8(0x03c8, 0);
-        for i in 0..16 {
-            // 書き込むときは上位2ビットを0にしないといけない
-            asm::out8(0x03c9, COLOR_PALETTE[i][0] / 4);
-            asm::out8(0x03c9, COLOR_PALETTE[i][1] / 4);
-            asm::out8(0x03c9, COLOR_PALETTE[i][2] / 4);
-        }
-        asm::store_eflags(eflags);
-    }
-
-    pub fn init_screen(&mut self, buf: usize) {
-        use Color::*;
-        let xsize = self.scrnx as isize;
-        let ysize = self.scrny as isize;
-
-        self.boxfill8(buf, DarkCyan, 0, 0, xsize - 1, ysize - 29);
-        self.boxfill8(buf, LightGray, 0, ysize - 28, xsize - 1, ysize - 28);
-        self.boxfill8(buf, White, 0, ysize - 27, xsize - 1, ysize - 27);
-        self.boxfill8(buf, LightGray, 0, ysize - 26, xsize - 1, ysize - 1);
-    
-        self.boxfill8(buf, White, 3, ysize - 24, 59, ysize - 24);
-        self.boxfill8(buf, White, 2, ysize - 24, 2, ysize - 4);
-        self.boxfill8(buf, DarkYellow, 3, ysize - 4, 59, ysize - 4);
-        self.boxfill8(buf, DarkYellow, 59, ysize - 23, 59, ysize - 5);
-        self.boxfill8(buf, Black,  2, ysize -  3, 59, ysize - 3);
-        self.boxfill8(buf, Black, 60, ysize - 24, 60, ysize - 3);
-    
-        self.boxfill8(buf, DarkGray, xsize - 47, ysize - 24, xsize - 4, ysize - 24);
-        self.boxfill8(buf, DarkGray, xsize - 47, ysize - 23, xsize - 47, ysize - 4);
-        self.boxfill8(buf, White, xsize - 47, ysize - 3, xsize - 4, ysize - 3);
-        self.boxfill8(buf, White, xsize - 3, ysize - 24, xsize - 3, ysize - 3);
-    }
-
-    pub fn boxfill8(&mut self, buf: usize, c: Color, x0: isize, y0: isize, x1: isize, y1: isize) { // x0..x1, y0..y1の範囲で四角を出力する
-        for y in y0..y1+1 {
-            for x in x0..x1+1 {
-                let ptr = unsafe { &mut *((buf as isize + y * self.scrnx as isize + x) as *mut u8) };
-                *ptr = c as u8;
-            }
-        }
-    }
-
-    pub fn print_char(&mut self, buf: usize, color: Color, x: isize, y: isize, font: u8) {
-        let font = FONTS[font as usize];
-        let color = color as u8;
-        let xsize = self.scrnx as isize;
-        let offset = x + y * xsize;
-        for y in 0..FONT_HEIGHT {
-            for x in 0..FONT_WIDTH {
-                if font[y][x] == '*' {
-                    let cell = (y * xsize as usize + x) as isize;
-                    let ptr = unsafe { &mut *((buf as isize + cell + offset) as *mut u8) };
-                    *ptr = color;
-                }
+pub fn print_char(buf: usize, bxsize: usize, color: Color, x: isize, y: isize, font: u8) {
+    let font = FONTS[font as usize];
+    let color = color as u8;
+    let offset = x + y * bxsize as isize;
+    for y in 0..FONT_HEIGHT {
+        for x in 0..FONT_WIDTH {
+            if font[y][x] == '*' {
+                let cell = (y * bxsize + x) as isize;
+                let ptr = unsafe { &mut *((buf as isize + cell + offset) as *mut u8) };
+                *ptr = color;
             }
         }
     }
 }
 
-
+pub fn make_window(buf: usize, xsize: i32, ysize: i32, title: &str) {
+    use Color::*;
+    use fmt::Write;
+    let xsize = xsize as isize;
+    let ysize = ysize as isize;
+    let closebtn: [&[u8; 16]; 14] = [
+        b"OOOOOOOOOOOOOOO@",
+        b"OQQQQQQQQQQQQQ$@",
+        b"OQQQQQQQQQQQQQ$@",
+        b"OQQQ@@QQQQ@@QQ$@",
+        b"OQQQQ@@QQ@@QQQ$@",
+        b"OQQQQQ@@@@QQQQ$@",
+        b"OQQQQQQ@@QQQQQ$@",
+        b"OQQQQQ@@@@QQQQ$@",
+        b"OQQQQ@@QQ@@QQQ$@",
+        b"OQQQ@@QQQQ@@QQ$@",
+        b"OQQQQQQQQQQQQQ$@",
+        b"OQQQQQQQQQQQQQ$@",
+        b"O$$$$$$$$$$$$$$@",
+        b"@@@@@@@@@@@@@@@@",
+    ];
+    let xsize = xsize as isize;
+    let ysize = ysize as isize;
+    boxfill8(buf, xsize, LightGray, 0, 0, xsize - 1, 0);
+    boxfill8(buf, xsize, White, 1, 1, xsize - 2, 1);
+    boxfill8(buf, xsize, LightGray, 0, 0, 0, ysize - 1);
+    boxfill8(buf, xsize, White, 1, 1, 1, ysize - 2);
+    boxfill8(buf, xsize, DarkGray, xsize - 2, 1, xsize - 2, ysize - 2);
+    boxfill8(buf, xsize, Black, xsize - 1, 0, xsize - 1, ysize - 1);
+    boxfill8(buf, xsize, LightGray, 2, 2, xsize - 3, ysize - 3);
+    boxfill8(buf, xsize, DarkBlue, 3, 3, xsize - 4, 20);
+    boxfill8(buf, xsize, DarkGray, 1, ysize - 2, xsize - 2, ysize - 2);
+    boxfill8(buf, xsize, Black, 0, ysize - 1, xsize - 1, ysize - 1);
+    let mut writer = ScreenWriter::new(
+        Some(buf),
+        White,
+        24,
+        4,
+        xsize as usize,
+        ysize as usize,
+    );
+    write!(writer, "{}", title).unwrap();
+    for y in 0..14 {
+        let y = y as usize;
+        for x in 0..16 {
+            let x = x as usize;
+            let c = closebtn[y][x];
+            let color: Color;
+            if c == b'@' {
+                color = Color::Black
+            } else if c == b'$' {
+                color = Color::DarkGray;
+            } else if c == b'Q' {
+                color = Color::LightGray;
+            } else {
+                color = Color::White
+            }
+            let ptr = unsafe {
+                &mut *((buf + (5 + y) * xsize as usize + (xsize as usize - 21 + x)) as *mut Color)
+            };
+            *ptr = color;
+        }
+    }
+}
 
 pub struct ScreenWriter {
     buf_addr: Option<usize>,
+    color: Color,
     initial_x: usize,
     x: usize,
     y: usize,
-    color: Color,
-    screen: Screen,
+    bxsize: usize,
+    bysize: usize,
 }
 
 impl ScreenWriter {
-    pub fn new(buf_addr: Option<usize>, screen: Screen, color: Color, x: usize, y: usize) -> ScreenWriter {
+    pub fn new(buf_addr: Option<usize>, color: Color, x: usize, y: usize, bxsize: usize, bysize: usize) -> ScreenWriter {
         ScreenWriter {
             buf_addr: buf_addr,
+            color,
             initial_x: x,
             x,
             y,
-            color,
-            screen,
+            bxsize,
+            bysize,
         }
     }
 
@@ -178,26 +219,38 @@ impl ScreenWriter {
 impl fmt::Write for ScreenWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let str_bytes = s.as_bytes();
-        let height = self.screen.scrny as usize;
-        let width = self.screen.scrnx as usize;
+        let height = self.bysize;
+        let width = self.bxsize;
         for i in 0..str_bytes.len() {
             if str_bytes[i] == b'\n' {
                 self.newline();
-                return Ok(());
+                continue;
             }
             let buf_addr = if let Some(b) = self.buf_addr {
                 b
             } else {
-                self.screen.vram
+                binfo.vram
             };
             if self.x + FONT_WIDTH < width && self.y + FONT_HEIGHT < height {
-                self.screen
-                    .print_char(buf_addr, self.color, self.x as isize, self.y as isize, str_bytes[i]);
+                print_char(
+                    buf_addr,
+                    self.bxsize,
+                    self.color, 
+                    self.x as isize, 
+                    self.y as isize, 
+                    str_bytes[i])
+                ;
             } else if self.y + FONT_HEIGHT * 2 < height {
                 // 1行ずらせば入る場合は1行ずらしてから表示
                 self.newline();
-                self.screen
-                    .print_char(buf_addr, self.color, self.x as isize, self.y as isize, str_bytes[i]);
+                print_char(
+                    buf_addr,
+                    self.bxsize,
+                    self.color, 
+                    self.x as isize, 
+                    self.y as isize, 
+                    str_bytes[i]
+                );
             }
             // 次の文字用の位置に移動
             if self.x + FONT_WIDTH < width {
