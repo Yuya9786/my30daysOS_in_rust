@@ -1,5 +1,6 @@
-use crate::binfo;
-use crate::vga::{Color};
+use core::cmp::{max, min};
+
+use crate::vga::{Color, SCREEN_HEIGHT, SCREEN_WIDTH, VRAM_ADDR};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SheetFlag {
@@ -8,282 +9,327 @@ pub enum SheetFlag {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SHEET {
-    pub buf: usize,
-    pub bxsize: usize,
-    pub bysize: usize,
-    pub vx0: i32,
-    pub vy0: i32,
-    pub col_inv: Option<Color>,   // 透明色番号
-    pub height: Option<usize>,
-    pub flags: SheetFlag,
+pub struct Sheet {
+    pub buf_addr: usize,
+    pub width: i32,
+    pub height: i32,
+    pub x: i32,
+    pub y: i32,
+    pub transparent: Option<Color>,
+    pub z: Option<usize>, // 重ねあわせたときの高さ
+    pub flag: SheetFlag,
 }
 
-impl SHEET {
-    pub fn new() -> SHEET {
-        SHEET {
-            buf: 0,
-            bxsize: 0,
-            bysize: 0,
-            vx0: 0,
-            vy0: 0,
-            col_inv: Some(Color::Black),
-            height: None,
-            flags: SheetFlag::AVAILABLE,   // 未使用マーク
+impl Sheet {
+    pub fn new() -> Sheet {
+        Sheet {
+            buf_addr: 0,
+            width: 0,
+            height: 0,
+            x: 0,
+            y: 0,
+            transparent: None,
+            z: None,
+            flag: SheetFlag::AVAILABLE,
         }
     }
 
-    pub fn setbuf(&mut self, buf: usize, xsize: usize, ysize: usize, col_inv: Option<Color>) {
-        self.buf = buf;
-        self.bxsize = xsize;
-        self.bysize = ysize;
-        self.col_inv = col_inv;
+    pub fn set(&mut self, buf_addr: usize, width: i32, height: i32, transparent: Option<Color>) {
+        self.buf_addr = buf_addr;
+        self.width = width;
+        self.height = height;
+        self.transparent = transparent;
     }
 }
 
 const MAX_SHEETS: usize = 256;
 
-pub struct SHTCTL {
-    pub vram: usize,
-    pub map: usize,
-    pub xsize: i32,
-    pub ysize: i32,
-    pub top: Option<usize>,
-    pub sheets: [usize; MAX_SHEETS],
-    // sheets_data上のindexを保持(Rustでは参照を持たせるのは取り回しが面倒なため)
-    pub sheets_data: [SHEET; MAX_SHEETS], 
+pub struct SheetManager {
+    pub z_max: Option<usize>,             // 一番上のSheetのz
+    pub map_addr: i32,                    // 重ね合わせ計算用のマップをもつ
+    pub sheets: [usize; MAX_SHEETS],      // sheets_data上のindexを保持する
+    pub sheets_data: [Sheet; MAX_SHEETS], // sheetデータの実体
 }
 
-impl SHTCTL {
-    pub fn new(map: usize) -> SHTCTL {
-        SHTCTL {
-            vram: binfo.vram,
-            map: map,
-            xsize: binfo.scrnx as i32,
-            ysize: binfo.scrny as i32,
-            top: None,
+impl SheetManager {
+    pub fn new(map_addr: i32) -> SheetManager {
+        SheetManager {
+            z_max: None,
+            map_addr,
             sheets: [0; MAX_SHEETS],
-            sheets_data: [SHEET::new(); MAX_SHEETS],
+            sheets_data: [Sheet::new(); MAX_SHEETS],
         }
     }
 
     pub fn alloc(&mut self) -> Option<usize> {
-        // 未使用のSHEETを持ってくる 戻り値はSHTCTL.sheetsのindex
         for i in 0..MAX_SHEETS {
-            if self.sheets_data[i].flags == SheetFlag::AVAILABLE {
-                self.sheets_data[i].flags = SheetFlag::USED;      // 使用中マーク        
-                self.sheets_data[i].height = None;    // 非表示中
-                return Some(i)
+            if self.sheets_data[i].flag == SheetFlag::AVAILABLE {
+                let mut sheet = &mut self.sheets_data[i];
+                sheet.flag = SheetFlag::USED;
+                sheet.z = None;
+                return Some(i);
             }
         }
         None
     }
 
-    pub fn updown(&mut self, sheet_index: usize, height: Option<usize>) {
-        let old = self.sheets_data[sheet_index].height; // 設定前の高さを記憶する
-
-        // topより高い場合修正
-        let hight = if let Some(h) = height {
-            Some(core::cmp::min(
-                if let Some(top) = self.top {
-                    top as usize + 1
-                } else {
-                    0
-                },
-                h
-            ))
-        } else {
-            None
-        };
-        
-        self.sheets_data[sheet_index].height = height;  // 高さを設定
-
-        // 以下は主にsheets[]の並び替え
-        let mut a: usize = 0;
-        let mut b: usize = 0;
-        if let Some(old) = old {
-            if let Some(height) = height {
-                if old > height {   // 以前よりも低くなる
-                    // 間のものを引き上げる
-                    let mut h = old;
-                    while h > height {
-                        self.sheets[h] = self.sheets[h-1];
-                        self.sheets_data[self.sheets[h]].height = Some(h);
-                        h -= 1;
-                    }
-                    self.sheets[height] = sheet_index;
-                    a = height;
-                    b = old;
-                } else if old < height {    // 以前よりも高くなる
-                    // 間のものを押し下げる
-                    let mut h = old;
-                    while h < height {
-                        self.sheets[h] = self.sheets[h+1];
-                        self.sheets_data[self.sheets[h]].height = Some(h);
-                        h += 1;
-                    }
-                    self.sheets[height] = sheet_index;
-                    a = height;
-                    b = height;
-                }
-            } else {    // 非表示化
-                if let Some(top) = self.top {
-                    if top > old {
-                        // 上のものをおろす
-                        let mut h = old;
-                        while h < top {
-                            self.sheets[h] = self.sheets[h+1];
-                            self.sheets_data[self.sheets[h]].height = Some(h);
-                            h += 1;
-                        }
-                    }
-                    self.top = if top > 0 { // 表示中のものが一つ減るので, 一番上の高さが減る
-                        Some(top - 1)
-                    } else {
-                        None
-                    };
-                }
-                a = 0;
-                b = old - 1;
-            }
-        } else {    // 非表示から表示状態へ
-            // 上になるものを持ち上げる
-            if let Some(height) = height {
-                if let Some(top) = self.top {
-                    let mut h = top;
-                    while h >= height {
-                        self.sheets[h+1] = self.sheets[h];
-                        self.sheets_data[self.sheets[h+1]].height = Some(h+1);
-                        h -= 1;
-                    }
-                }
-                self.sheets[height] = sheet_index;
-                if let Some(top) = self.top {   // 表示する下敷きが1枚増えるので，一番上の高さが増える
-                    self.top = Some(top+1);
-                } else {
-                    self.top = Some(0);
-                }
-                a = height;
-                b = height;
-            } else {
-                return;
-            }
-        }
-
-        let sht = self.sheets_data[sheet_index];
-        self.refreshmap(sht.vx0, sht.vy0, sht.vx0 + sht.bxsize as i32, sht.vy0 + sht.bysize as i32, a);
-        self.refreshsub(sht.vx0, sht.vy0, sht.vx0 + sht.bxsize as i32, sht.vy0 + sht.bysize as i32, a, b);     // 
-    }
-
-    pub fn refresh(&mut self, sheet_index: usize, bx0: i32, by0: i32, bx1: i32, by1: i32) {
-        if let Some(height) = self.sheets_data[sheet_index].height {
-            let sht = &self.sheets_data[sheet_index];
-            self.refreshsub(sht.vx0 + bx0, sht.vy0 + by0, sht.vx0 + bx1, sht.vy0 + by1, height, height);
-        }
-    }
-
-    pub fn refreshsub(&mut self, vx0: i32, vy0: i32, vx1: i32, vy1: i32, h0: usize, h1: usize) {
-        let vx0 = core::cmp::max(0, vx0);
-        let vy0 = core::cmp::max(0, vy0);
-        let vx1 = core::cmp::min(vx1, self.xsize as i32);
-        let vy1 = core::cmp::min(vy1, self.ysize as i32);
-        if let Some(top) = self.top {
-            for h in h0..=h1 {
-                let sid = self.sheets[h];
-                let sht = &self.sheets_data[self.sheets[h]];
-                let buf = sht.buf;
-                let bx0 = if vx0 > sht.vx0 { vx0 - sht.vx0 } else { 0 } as usize;
-                let by0 = if vy0 > sht.vy0 { vy0 - sht.vy0 } else { 0 } as usize;
-                let bx1 = if vx1 > sht.vx0 {
-                    core::cmp::min(vx1 - sht.vx0, sht.bxsize as i32)
-                } else {
-                    0
-                } as usize;
-                let by1 = if vy1 > sht.vy0 {
-                    core::cmp::min(vy1 - sht.vy0, sht.bysize as i32)
-                } else {
-                    0
-                } as usize;
-                for by in by0..by1 {
-                    let vy = sht.vy0 + by as i32;
-                    for bx in bx0..bx1 {
-                        let vx = sht.vx0 + bx as i32;
-                        let map_sid = unsafe {
-                            *((self.map as *mut u8).offset((vy * self.xsize + vx) as isize))
-                        };
-                        if sid == map_sid as usize {
-                            let c = unsafe { *((buf + by * sht.bxsize + bx) as *const Color) };
-                            unsafe {
-                                *((self.vram as *mut u8).offset((vy * self.xsize + vx) as isize)) = c as u8;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn slide(&mut self, sheet_index: usize, x: i32, y: i32) {
-        let sht = &mut self.sheets_data[sheet_index];
-        let old_vx0 = sht.vx0;
-        let old_vy0 = sht.vy0;
-        sht.vx0 = x;
-        sht.vy0 = y;
-        if let Some(h) = sht.height {    // もしも表示中なら
-            let bxsize = sht.bxsize as i32;
-            let bysize = sht.bysize as i32;
-            self.refreshmap(old_vx0, old_vy0, old_vx0 + bxsize, old_vy0 + bysize, 0);
-            self.refreshmap(x, y, x + bxsize, y + bysize, h);
-            self.refreshsub(old_vx0, old_vy0, old_vx0 + bxsize, old_vy0 + bysize, 0, h - 1);
-            self.refreshsub(x, y, x + bxsize, y + bysize, h, h);
-        }
-    }
-
-    pub fn free(&mut self, sheet_index: usize) {
-        if let Some(h) = self.sheets_data[sheet_index].height {
-            self.updown(sheet_index, None);   // 表示中なら非表示にする
-        }
-        self.sheets_data[sheet_index].flags = SheetFlag::AVAILABLE; // 未使用マーク
-    }
-
-    pub fn refreshmap(&mut self, vx0: i32, vy0: i32, vx1: i32, vy1: i32, h0: usize) {
-        if self.top.is_none() {
+    pub fn refresh_map(&self, x0: i32, y0: i32, x1: i32, y1: i32, z0: i32) {
+        if self.z_max.is_none() {
             return;
         }
-
-        let vx0 = core::cmp::max(0, vx0);
-        let vy0 = core::cmp::max(0, vy0);
-        let vx1 = core::cmp::min(vx1, self.xsize as i32);
-        let vy1 = core::cmp::min(vy1, self.ysize as i32);
-
-        for h in h0..=self.top.unwrap() {
-            let sid = self.sheets[h];
-            let sht = &self.sheets_data[self.sheets[h]];
-            let buf = sht.buf;
-            let bx0 = if vx0 > sht.vx0 { vx0 - sht.vx0 } else { 0 } as usize;
-            let by0 = if vy0 > sht.vy0 { vy0 - sht.vy0 } else { 0 } as usize;
-            let bx1 = if vx1 > sht.vx0 {
-                core::cmp::min(vx1 - sht.vx0, sht.bxsize as i32)
+        let x0 = max(0, x0);
+        let y0 = max(0, y0);
+        let x1 = min(x1, *SCREEN_WIDTH as i32);
+        let y1 = min(y1, *SCREEN_HEIGHT as i32);
+        for h in (z0 as usize)..=self.z_max.unwrap() {
+            let si = self.sheets[h as usize];
+            let sheet = &self.sheets_data[si];
+            let bx0 = if x0 > sheet.x { x0 - sheet.x } else { 0 } as usize;
+            let by0 = if y0 > sheet.y { y0 - sheet.y } else { 0 } as usize;
+            let bx1 = if x1 > sheet.x {
+                min(x1 - sheet.x, sheet.width)
             } else {
                 0
             } as usize;
-            let by1 = if vy1 > sht.vy0 {
-                core::cmp::min(vy1 - sht.vy0, sht.bysize as i32)
+            let by1 = if y1 > sheet.y {
+                min(y1 - sheet.y, sheet.height)
             } else {
                 0
             } as usize;
             for by in by0..by1 {
-                let vy = sht.vy0 + by as i32;
+                let vy = sheet.y as usize + by;
                 for bx in bx0..bx1 {
-                    let vx = sht.vx0 + bx as i32;
-                    let c = unsafe { *((buf + by * sht.bxsize + bx) as *const Color) };
-                    if Some(c) != sht.col_inv {
-                        unsafe {
-                            *((self.map as *mut u8).offset((vy * self.xsize + vx) as isize)) = sid as u8;
-                        }
+                    let vx = sheet.x as usize + bx;
+                    let width = sheet.width as usize;
+                    let c = unsafe { *((sheet.buf_addr + by * width + bx) as *const Color) };
+                    if Some(c) != sheet.transparent {
+                        let ptr = unsafe {
+                            &mut *((self.map_addr as *mut u8)
+                                .offset(vy as isize * *SCREEN_WIDTH as isize + vx as isize))
+                        };
+                        *ptr = si as u8;
                     }
                 }
             }
-        }        
+        }
+    }
+
+    pub fn refresh_part(&self, x0: i32, y0: i32, x1: i32, y1: i32, z0: i32, z1: i32) {
+        if self.z_max.is_none() {
+            return;
+        }
+        let x0 = max(0, x0);
+        let y0 = max(0, y0);
+        let x1 = min(x1, *SCREEN_WIDTH as i32);
+        let y1 = min(y1, *SCREEN_HEIGHT as i32);
+
+        for h in (z0 as usize)..=(z1 as usize) {
+            let si = self.sheets[h as usize];
+            let sheet = &self.sheets_data[si];
+            let bx0 = if x0 > sheet.x { x0 - sheet.x } else { 0 } as usize;
+            let by0 = if y0 > sheet.y { y0 - sheet.y } else { 0 } as usize;
+            let bx1 = if x1 > sheet.x {
+                min(x1 - sheet.x, sheet.width)
+            } else {
+                0
+            } as usize;
+            let by1 = if y1 > sheet.y {
+                min(y1 - sheet.y, sheet.height)
+            } else {
+                0
+            } as usize;
+            for by in by0..by1 {
+                let vy = sheet.y as usize + by;
+                for bx in bx0..bx1 {
+                    let vx = sheet.x as usize + bx;
+                    let width = sheet.width as usize;
+                    let map_si = unsafe {
+                        *((self.map_addr as isize
+                            + vy as isize * *SCREEN_WIDTH as isize
+                            + vx as isize) as *const u8)
+                    };
+                    if si as u8 == map_si {
+                        let c = unsafe { *((sheet.buf_addr + by * width + bx) as *const Color) };
+                        let ptr = unsafe {
+                            &mut *((*VRAM_ADDR as *mut u8)
+                                .offset(vy as isize * *SCREEN_WIDTH as isize + vx as isize))
+                        };
+                        *ptr = c as u8;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn updown(&mut self, sheet_index: usize, oz: Option<usize>) {
+        let sheet = self.sheets_data[sheet_index];
+        let old = sheet.z;
+        let oz = if let Some(z) = oz {
+            Some(min(
+                if let Some(zmax) = self.z_max {
+                    zmax as usize + 1
+                } else {
+                    0
+                },
+                z,
+            ))
+        } else {
+            None
+        };
+        {
+            let mut sh = &mut self.sheets_data[sheet_index];
+            sh.z = oz;
+        }
+        if old != oz {
+            let z0: i32;
+            let z1: i32;
+            if let Some(o) = old {
+                if let Some(z) = oz {
+                    // 下げる
+                    if o > z {
+                        let mut h = o;
+                        while h > z {
+                            self.sheets[h] = self.sheets[h - 1];
+                            let mut sh = &mut self.sheets_data[self.sheets[h]];
+                            sh.z = Some(h);
+                            h -= 1;
+                        }
+                        self.sheets[z] = sheet_index;
+                        z0 = z as i32;
+                        z1 = o as i32;
+                    // 上げる
+                    } else if o < z {
+                        for h in o..z {
+                            self.sheets[h] = self.sheets[h + 1];
+                            let mut sh = &mut self.sheets_data[self.sheets[h]];
+                            sh.z = Some(h);
+                        }
+                        self.sheets[z] = sheet_index;
+                        z0 = z as i32;
+                        z1 = z as i32;
+                    } else {
+                        return;
+                    }
+                } else {
+                    // 表示 -> 非表示
+                    if let Some(zmax) = self.z_max {
+                        if zmax > o {
+                            for h in o..zmax as usize {
+                                self.sheets[h] = self.sheets[h + 1];
+                                let mut sh = &mut self.sheets_data[self.sheets[h]];
+                                sh.z = Some(h);
+                            }
+                        }
+                        self.sheets[zmax + 1] = sheet_index;
+                        self.z_max = if zmax > 0 { Some(zmax - 1) } else { None }
+                    }
+                    z0 = 0;
+                    z1 = o as i32 - 1;
+                }
+            } else {
+                // 非表示 -> 表示
+                if let Some(z) = oz {
+                    let zmax = if let Some(zmax) = self.z_max { zmax } else { 0 };
+                    for h in z..zmax {
+                        self.sheets[h + 1] = self.sheets[h];
+                        let mut sh = &mut self.sheets_data[self.sheets[h + 1]];
+                        sh.z = Some(h + 1);
+                    }
+                    self.sheets[z] = sheet_index;
+                    if let Some(zmax) = self.z_max {
+                        self.z_max = Some(zmax + 1);
+                    } else {
+                        self.z_max = Some(0)
+                    }
+                    z0 = z as i32;
+                    z1 = z as i32;
+                } else {
+                    return;
+                }
+            }
+            self.refresh_map(
+                sheet.x,
+                sheet.y,
+                sheet.x + sheet.width,
+                sheet.y + sheet.height,
+                z0,
+            );
+            self.refresh_part(
+                sheet.x,
+                sheet.y,
+                sheet.x + sheet.width,
+                sheet.y + sheet.height,
+                z0,
+                z1,
+            );
+        }
+    }
+
+    pub fn refresh(&self, sheet_index: usize, x0: i32, y0: i32, x1: i32, y1: i32) {
+        let sheet = self.sheets_data[sheet_index];
+        if let Some(z) = sheet.z {
+            self.refresh_part(
+                sheet.x + x0,
+                sheet.y + y0,
+                sheet.x + x1,
+                sheet.y + y1,
+                z as i32,
+                z as i32,
+            );
+        }
+    }
+
+    pub fn slide_by_diff(&mut self, sheet_index: usize, dx: i32, dy: i32) {
+        let scrnx = *SCREEN_WIDTH as i32;
+        let scrny = *SCREEN_HEIGHT as i32;
+        let sheet = self.sheets_data[sheet_index];
+        let mut new_x = sheet.x + dx;
+        let mut new_y = sheet.y + dy;
+        let xmax = scrnx - 1;
+        let ymax = scrny - 1;
+        if new_x < 0 {
+            new_x = 0;
+        } else if new_x > xmax {
+            new_x = xmax;
+        }
+        if new_y < 0 {
+            new_y = 0;
+        } else if new_y > ymax {
+            new_y = ymax;
+        }
+        self.slide(sheet_index, new_x, new_y);
+    }
+
+    pub fn slide(&mut self, sheet_index: usize, x: i32, y: i32) {
+        let sheet = self.sheets_data[sheet_index];
+        let old_x = sheet.x;
+        let old_y = sheet.y;
+        {
+            let sh = &mut self.sheets_data[sheet_index];
+            sh.x = x;
+            sh.y = y;
+        }
+        if let Some(z) = sheet.z {
+            self.refresh_map(old_x, old_y, old_x + sheet.width, old_y + sheet.height, 0);
+            self.refresh_map(x, y, x + sheet.width, y + sheet.height, z as i32);
+            self.refresh_part(
+                old_x,
+                old_y,
+                old_x + sheet.width,
+                old_y + sheet.height,
+                0,
+                z as i32 - 1,
+            );
+            self.refresh_part(x, y, x + sheet.width, y + sheet.height, z as i32, z as i32);
+        }
+    }
+
+    pub fn free(&mut self, sheet_index: usize) {
+        let sheet = self.sheets_data[sheet_index];
+        if sheet.z.is_some() {
+            self.updown(sheet_index, None);
+        }
+        let mut sheet = &mut self.sheets_data[sheet_index];
+        sheet.flag = SheetFlag::AVAILABLE;
     }
 }

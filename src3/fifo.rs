@@ -1,6 +1,6 @@
 use core::cell::{Cell, RefCell};
 
-pub struct Fifo {
+pub struct FIFO8 {
     pub buf: RefCell<[u8; 128]>,
     pub p: Cell<u32>,
     pub q: Cell<u32>,
@@ -11,9 +11,9 @@ pub struct Fifo {
 
 const FLAGS_OVERRUN: u32 = 0x0001;
 
-impl Fifo {
-    pub fn new(size: u32) -> Fifo {
-        Fifo {
+impl FIFO8 {
+    pub fn new(size: u32) -> FIFO8 {
+        FIFO8 {
             p: Cell::new(0),
             q: Cell::new(0),
             free: Cell::new(size),

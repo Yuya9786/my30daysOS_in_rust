@@ -30,7 +30,7 @@ pub fn load_cr0() -> u32 {
 
 pub fn store_cr0(cr0: u32) {
     unsafe {
-        asm!("MOV CR0,EAX" : : "{EAX}"(cr0) : : "intel");
+        asm!("MOV CR0,EAX" : : "EAX"(cr0) : : "intel");
     }
 }
 

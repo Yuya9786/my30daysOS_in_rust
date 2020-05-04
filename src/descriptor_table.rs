@@ -1,5 +1,6 @@
 use crate::asm;
 use crate::handler;
+use crate::timer::inthandler20;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
@@ -62,7 +63,7 @@ const AR_DATA32_RW: i32 = 0x4092;
 const AR_CODE32_ER: i32 = 0x409a;
 
 pub fn init() {
-    use crate::int::{inthandler21, inthandler2C};
+    use crate::interrupt::{inthandler21, inthandler2c};
     use asm::{load_gdtr, load_idtr};
     // GDTの初期化
     for i in 0..=(LIMIT_GDT / 8) {
@@ -86,6 +87,9 @@ pub fn init() {
     let idt = unsafe { &mut *((ADR_IDT + 0x21 * 8) as *mut GateDescriptor) };
     *idt = GateDescriptor::new(handler!(inthandler21) as u32, 2 * 8, AR_INTGATE32);
     let idt = unsafe { &mut *((ADR_IDT + 0x2c * 8) as *mut GateDescriptor) };
-    *idt = GateDescriptor::new(handler!(inthandler2C) as u32, 2 * 8, AR_INTGATE32);
+    *idt = GateDescriptor::new(handler!(inthandler2c) as u32, 2 * 8, AR_INTGATE32);
+    let idt = unsafe { &mut *((ADR_IDT + 0x20 * 8) as *mut GateDescriptor) };
+    *idt = GateDescriptor::new(handler!(inthandler20) as u32, 2 * 8, AR_INTGATE32);
+
     load_idtr(LIMIT_IDT, ADR_IDT);
 }
