@@ -2,6 +2,7 @@
 #![feature(asm)]
 #![feature(start)]
 #![feature(naked_functions)]
+#![feature(alloc_error_handler)]
 
 use core::panic::PanicInfo;
 use lazy_static::lazy_static;
@@ -16,6 +17,7 @@ mod mouse;
 mod memory;
 mod sheet;
 mod timer;
+//mod allocator;
 
 
 pub struct BOOTINFO {
@@ -50,9 +52,8 @@ lazy_static! {
 #[start]
 pub extern "C" fn HariMain() {
     use asm::{cli, sti};
-    use core::fmt::Write;
-    use fifo::Fifo;
-    use interrupt::{enable_mouse, KEYBUF, MOUSEBUF};
+    use fifo::FIFO_BUF;
+    use interrupt::enable_mouse;
     use memory::{MemMan, MEMMAN_ADDR};
     use mouse::{Mouse, MouseDec, MOUSE_CURSOR_HEIGHT, MOUSE_CURSOR_WIDTH};
     use sheet::SheetManager;
@@ -61,11 +62,6 @@ pub extern "C" fn HariMain() {
         boxfill, init_palette, init_screen, make_window, Color, ScreenWriter, SCREEN_HEIGHT,
         SCREEN_WIDTH,
     };
-
-    let timerfifo1 = Fifo::new(8);
-    let timerfifo2 = Fifo::new(8);
-    let timerfifo3 = Fifo::new(8);
-
 
     descriptor_table::init();
     interrupt::init();
@@ -76,13 +72,13 @@ pub extern "C" fn HariMain() {
     enable_mouse();
     
     let timer_index1 = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_index1, &timerfifo1, 1);
+    TIMER_MANAGER.lock().init_timer(timer_index1, 10);
     TIMER_MANAGER.lock().set_time(timer_index1, 1000);
     let timer_index2 = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_index2, &timerfifo2, 1);
+    TIMER_MANAGER.lock().init_timer(timer_index2, 3);
     TIMER_MANAGER.lock().set_time(timer_index2, 300);
     let timer_index3 = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_index3, &timerfifo3, 1);
+    TIMER_MANAGER.lock().init_timer(timer_index3, 1);
     TIMER_MANAGER.lock().set_time(timer_index3, 50);
     
     let memtotal = memory::memtest(0x00400000, 0xbfffffff);
@@ -126,93 +122,154 @@ pub extern "C" fn HariMain() {
     shtctl.updown(sht_back, Some(0));
     shtctl.updown(sht_win, Some(1));
     shtctl.updown(sht_mouse, Some(2));
-    
-    let mut writer = ScreenWriter::new(Some(buf_addr_back as usize), Color::White, 0, 32, binfo.scrnx as usize, binfo.scrny as usize);
-    write!(writer, "memory: {}MB free: {}KB ", memtotal / (1024 * 1024), memman.total() / 1024).unwrap();
-    shtctl.refresh(sht_back, 0, 0, binfo.scrnx as i32, 48);
-    loop {
-        cli();
-        if let Some(tc) = TIMER_MANAGER.try_lock() {
-            boxfill(buf_addr_win, 160, Color::LightGray, 40, 28, 119, 43);
-            let mut writer = ScreenWriter::new(Some(buf_addr_win), Color::Black, 40, 28, 160, 52);
-            write!(writer, "{:>010}", tc.count).unwrap();
-            shtctl.refresh(sht_win, 40, 28, 120, 44);
-        }
-        
-        if KEYBUF.lock().status() != 0 {
-            let i = KEYBUF.lock().get().unwrap();
-            sti();
-            boxfill(buf_addr_back as usize, binfo.scrnx as isize, Color::DarkCyan, 0, 0, 16, 16);
-            let mut writer = ScreenWriter::new(Some(buf_addr_back as usize), Color::White, 0, 0, binfo.scrnx as usize, binfo.scrny as usize);
-            write!(writer, "{:02x}", i).unwrap();
-            shtctl.refresh(sht_back, 0, 0, 16, 16);
-        } else if MOUSEBUF.lock().status() != 0 {
-            let i = MOUSEBUF.lock().get().unwrap();
-            sti();
-            if mdec.decode(i).is_some() {
-                // データが3バイト揃ったので表示
-                boxfill(buf_addr_back as usize, binfo.scrnx as isize, Color::DarkCyan, 32, 0, 32 + 15 * 8, 16);
-                let mut writer = ScreenWriter::new(Some(buf_addr_back as usize), Color::White, 32, 0, binfo.scrnx as usize, binfo.scrny as usize);
-                write!(writer, "[{}{}{} {:>4} {:>4}]", 
-                if mdec.btn.get() & 0x01 != 0 {
-                    'L'
-                } else {
-                    'l'
-                },
-                if mdec.btn.get() & 0x04 != 0 {
-                    'C'
-                } else {
-                    'c'
-                },
-                if mdec.btn.get() & 0x02 != 0 {
-                    'R'
-                } else {
-                    'r'
-                },
-                mdec.x.get(), mdec.y.get()
-                ).unwrap();
 
-                mx += mdec.x.get();
-                my += mdec.y.get();
-                if mx < 0 {
-                    mx = 0;
-                }
-                if my < 0 {
-                    my = 0;
-                }
-                if mx > binfo.scrnx as i32 - 1 {
-                    mx = binfo.scrnx as i32 - 1;
-                }
-                if my > binfo.scrny as i32 - 1 {
-                    my = binfo.scrny as i32 - 1;
-                }
-                shtctl.refresh(sht_back, 32, 0, 32 + 15 * 8, 16);
-                shtctl.slide(sht_mouse, mx, my);
-            }
-        } else if timerfifo1.status() != 0 {
-            let _ = timerfifo1.get().unwrap();
+    write_with_bg!(
+        shtctl,
+        sht_back,
+        buf_addr_back,
+        *SCREEN_WIDTH as isize,
+        *SCREEN_HEIGHT as isize,
+        0,
+        32,
+        Color::White,
+        Color::DarkCyan,
+        27,
+        "total: {}MB  free: {}KB",
+        memtotal / (1024 * 1024),
+        memman.total() / 1024
+    );
+
+    let mut count = 0;
+    let mut count_done = false;
+    loop {
+        count += 1;
+        cli();
+        
+        if FIFO_BUF.lock().status() != 0 {
+            let i = FIFO_BUF.lock().get().unwrap();
             sti();
-            let mut writer = ScreenWriter::new(Some(buf_addr_back as usize), Color::White, 0, 64, binfo.scrnx as usize, binfo.scrny as usize);
-            write!(writer, "10[sec]").unwrap();
-            shtctl.refresh(sht_back, 0, 64, 56, 80);
-        } else if timerfifo2.status() != 0 {
-            let _ = timerfifo2.get().unwrap();
-            sti();
-            let mut writer = ScreenWriter::new(Some(buf_addr_back as usize), Color::White, 0, 80, binfo.scrnx as usize, binfo.scrny as usize);
-            write!(writer, "3[sec]").unwrap();
-            shtctl.refresh(sht_back, 0, 80, 48, 96);
-        } else if timerfifo3.status() != 0 {
-            let i = timerfifo3.get().unwrap();
-            sti();
-            if i != 0 {
-                TIMER_MANAGER.lock().init_timer(timer_index3, &timerfifo3, 0);
-                boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::White, 8, 96, 15, 111);
+            if 256 <= i && i <= 511 {
+                write_with_bg!(
+                    shtctl,
+                    sht_back,
+                    buf_addr_back,
+                    *SCREEN_WIDTH as isize,
+                    *SCREEN_HEIGHT as isize,
+                    0,
+                    0,
+                    Color::White,
+                    Color::DarkCyan,
+                    2,
+                    "{:02x}",
+                    i - 256
+                );
+            } else if 512 <= i && i <= 767 {
+                if mdec.decode((i - 512) as u8).is_some() {
+                    // データが3バイト揃ったので表示
+                    write_with_bg!(
+                        shtctl,
+                        sht_back,
+                        buf_addr_back,
+                        *SCREEN_WIDTH as isize,
+                        *SCREEN_HEIGHT as isize,
+                        32,
+                        0,
+                        Color::White,
+                        Color::DarkCyan,
+                        15,
+                        "[{}{}{} {:>4} {:>4}]", 
+                        if mdec.btn.get() & 0x01 != 0 {
+                            'L'
+                        } else {
+                            'l'
+                        },
+                        if mdec.btn.get() & 0x04 != 0 {
+                            'C'
+                        } else {
+                            'c'
+                        },
+                        if mdec.btn.get() & 0x02 != 0 {
+                            'R'
+                        } else {
+                            'r'
+                        },
+                        mdec.x.get(), mdec.y.get()
+                    );
+
+                    mx += mdec.x.get();
+                    my += mdec.y.get();
+                    if mx < 0 {
+                        mx = 0;
+                    }
+                    if my < 0 {
+                        my = 0;
+                    }
+                    if mx > binfo.scrnx as i32 - 1 {
+                        mx = binfo.scrnx as i32 - 1;
+                    }
+                    if my > binfo.scrny as i32 - 1 {
+                        my = binfo.scrny as i32 - 1;
+                    }
+                    shtctl.refresh(sht_back, 32, 0, 32 + 15 * 8, 16);
+                    shtctl.slide(sht_mouse, mx, my);
+                }
+            } else if i == 10 {
+                write_with_bg!(
+                    shtctl,
+                    sht_back,
+                    buf_addr_back,
+                    *SCREEN_WIDTH as isize,
+                    *SCREEN_HEIGHT as isize,
+                    0,
+                    64,
+                    Color::White,
+                    Color::DarkCyan,
+                    7,
+                    "10[sec]"
+                );
+                if !count_done {
+                    write_with_bg!(
+                        shtctl,
+                        sht_win,
+                        buf_addr_win,
+                        160,
+                        52,
+                        40,
+                        28,
+                        Color::Black,
+                        Color::LightGray,
+                        10,
+                        "{:>010}",
+                        count
+                    );
+                    count_done = true;
+                }
+            } else if i == 3 {
+                write_with_bg!(
+                    shtctl,
+                    sht_back,
+                    buf_addr_back,
+                    *SCREEN_WIDTH as isize,
+                    *SCREEN_HEIGHT as isize,
+                    0,
+                    80,
+                    Color::White,
+                    Color::DarkCyan,
+                    6,
+                    "3[sec]"
+                );
+                count = 0;  // 測定開始
             } else {
-                TIMER_MANAGER.lock().init_timer(timer_index3, &timerfifo3, 1);
-                boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::DarkCyan, 8, 96, 15, 111);
+                if i != 0 {
+                    TIMER_MANAGER.lock().init_timer(timer_index3, 0);
+                    boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::White, 8, 96, 15, 111);
+                } else {
+                    TIMER_MANAGER.lock().init_timer(timer_index3, 1);
+                    boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::DarkCyan, 8, 96, 15, 111);
+                }
+                TIMER_MANAGER.lock().set_time(timer_index3, 50);
+                shtctl.refresh(sht_back, 8, 96, 16, 112);
             }
-            TIMER_MANAGER.lock().set_time(timer_index3, 50);
-            shtctl.refresh(sht_back, 8, 96, 16, 112);
         } else {
             sti();
         }
