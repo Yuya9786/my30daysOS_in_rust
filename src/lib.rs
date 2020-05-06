@@ -17,6 +17,7 @@ mod mouse;
 mod memory;
 mod sheet;
 mod timer;
+mod keyboard;
 //mod allocator;
 
 
@@ -51,7 +52,7 @@ lazy_static! {
 #[no_mangle]
 #[start]
 pub extern "C" fn HariMain() {
-    use asm::{cli, sti};
+    use asm::{cli, sti, stihlt};
     use fifo::FIFO_BUF;
     use interrupt::enable_mouse;
     use memory::{MemMan, MEMMAN_ADDR};
@@ -62,6 +63,7 @@ pub extern "C" fn HariMain() {
         boxfill, init_palette, init_screen, make_window, Color, ScreenWriter, SCREEN_HEIGHT,
         SCREEN_WIDTH,
     };
+    use keyboard::KEYTABLE;
 
     descriptor_table::init();
     interrupt::init();
@@ -115,7 +117,8 @@ pub extern "C" fn HariMain() {
     let mut my = (binfo.scrny as i32 - MOUSE_CURSOR_HEIGHT as i32 - 28) / 2;
     mouse.render();
 
-    vga::make_window(buf_addr_win as usize, 160, 52, "counter");
+    vga::make_window(buf_addr_win, 160, 52, "counter");
+    vga::make_textbox(buf_addr_win, 160, 8, 28, 144, 16, Color::White);
 
     shtctl.slide(sht_mouse, mx, my);
     shtctl.slide(sht_win, 80, 72);
@@ -139,16 +142,19 @@ pub extern "C" fn HariMain() {
         memman.total() / 1024
     );
 
-    let mut count = 0;
-    let mut count_done = false;
+    // let mut count = 0;
+    // let mut count_done = false;
+
+    let mut cursor_x = 8;
+    let mut cursor_c = Color::White;
     loop {
-        count += 1;
+        // count += 1;
         cli();
         
         if FIFO_BUF.lock().status() != 0 {
             let i = FIFO_BUF.lock().get().unwrap();
             sti();
-            if 256 <= i && i <= 511 {
+            if 256 <= i && i <= 511 {   // キーボード
                 write_with_bg!(
                     shtctl,
                     sht_back,
@@ -163,6 +169,46 @@ pub extern "C" fn HariMain() {
                     "{:02x}",
                     i - 256
                 );
+                if i < 256 + 0x54 {
+                    let key = (i - 256) as usize;
+                    if KEYTABLE[key] != 0 && cursor_x < 144 {
+                        write_with_bg!(
+                            shtctl,
+                            sht_win,
+                            buf_addr_win,
+                            160,
+                            52,
+                            cursor_x,
+                            28,
+                            Color::Black,
+                            Color::White,
+                            1,
+                            "{}",
+                            KEYTABLE[key] as char
+                        );
+                        cursor_x += 8;
+                    }
+                }
+                if i == 256 + 0x0e && cursor_x > 8 {    // バックスペース
+                    // カーソルをスペースで消してからカーソルを一つ戻す
+                    write_with_bg!(
+                        shtctl,
+                        sht_win,
+                        buf_addr_win,
+                        160,
+                        52,
+                        cursor_x,
+                        28,
+                        Color::Black,
+                        Color::White,
+                        1,
+                        " ",
+                    );
+                    cursor_x -= 8;
+                }
+                // カーソルの再表示
+                boxfill(buf_addr_win, 160, cursor_c, cursor_x, 28, cursor_x + 7, 43);
+                shtctl.refresh(sht_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44);
             } else if 512 <= i && i <= 767 {
                 if mdec.decode((i - 512) as u8).is_some() {
                     // データが3バイト揃ったので表示
@@ -212,6 +258,10 @@ pub extern "C" fn HariMain() {
                     }
                     shtctl.refresh(sht_back, 32, 0, 32 + 15 * 8, 16);
                     shtctl.slide(sht_mouse, mx, my);
+                    if (mdec.btn.get() & 0x01) != 0 {
+                        // 左クリックされていたらsht_winを動かす
+                        shtctl.slide(sht_win, mx - 80, my - 8);
+                    }
                 }
             } else if i == 10 {
                 write_with_bg!(
@@ -227,23 +277,23 @@ pub extern "C" fn HariMain() {
                     7,
                     "10[sec]"
                 );
-                if !count_done {
-                    write_with_bg!(
-                        shtctl,
-                        sht_win,
-                        buf_addr_win,
-                        160,
-                        52,
-                        40,
-                        28,
-                        Color::Black,
-                        Color::LightGray,
-                        10,
-                        "{:>010}",
-                        count
-                    );
-                    count_done = true;
-                }
+                // if !count_done {
+                //     write_with_bg!(
+                //         shtctl,
+                //         sht_win,
+                //         buf_addr_win,
+                //         160,
+                //         52,
+                //         40,
+                //         28,
+                //         Color::Black,
+                //         Color::LightGray,
+                //         10,
+                //         "{:>010}",
+                //         count
+                //     );
+                //     count_done = true;
+                // }
             } else if i == 3 {
                 write_with_bg!(
                     shtctl,
@@ -258,20 +308,21 @@ pub extern "C" fn HariMain() {
                     6,
                     "3[sec]"
                 );
-                count = 0;  // 測定開始
+                // count = 0;  // 測定開始
             } else {
                 if i != 0 {
                     TIMER_MANAGER.lock().init_timer(timer_index3, 0);
-                    boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::White, 8, 96, 15, 111);
+                    cursor_c = Color::Black;
                 } else {
                     TIMER_MANAGER.lock().init_timer(timer_index3, 1);
-                    boxfill(buf_addr_back, *SCREEN_WIDTH as isize, Color::DarkCyan, 8, 96, 15, 111);
+                    cursor_c = Color::White;
                 }
                 TIMER_MANAGER.lock().set_time(timer_index3, 50);
-                shtctl.refresh(sht_back, 8, 96, 16, 112);
+                boxfill(buf_addr_win, 160, cursor_c, cursor_x, 28, cursor_x + 8, 43);
+                shtctl.refresh(sht_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44);
             }
         } else {
-            sti();
+            stihlt();
         }
     }
 }

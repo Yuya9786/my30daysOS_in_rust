@@ -1,5 +1,6 @@
 ; haribote-os boot asm
 ; TAB=4
+VBEMODE EQU		0x104
 
 BOTPAK	EQU		0x00280000		; bootpackのロード先
 DSKCAC	EQU		0x00100000		; ディスクキャッシュの場所
@@ -16,16 +17,66 @@ VRAM	EQU		0x0ff8			; グラフィックバッファの開始番地
 		ORG		0xc200			; このプログラムがどこに読み込まれるのか
 
 ; 画面モードを設定
+; VBE存在確認
 
-		MOV		AL,0x13			; VGAグラフィックス、320x200x8bitカラー
-		MOV		AH,0x00
+		MOV 	AX,0x9000
+		MOV		ES,AX
+		MOV		DI,0
+		MOV		AX,0x4f00
+		INT		0x10
+		CMP 	AX,0x004f
+		JNE		scrn320
+
+; VBEのバージョンチェック
+
+		MOV		AX,[ES:DI+4]
+		CMP		AX,0x0200
+		JB		scrn320
+
+; 画面モード情報を得る
+
+		MOV		CX,VBEMODE
+		MOV		AX,0x4f01
+		INT		0x10
+		CMP		AX,0x004f
+		JNE		scrn320
+
+; 画面モード情報の確認
+
+		CMP  	BYTE [ES:DI+0x19],8
+		JNE		scrn320
+		CMP		BYTE [ES:DI+0x1b],4
+		JNE  	scrn320
+		MOV 	AX,[ES:DI+0x00]
+		AND		AX,0x0080
+		JZ		scrn320					; モード属性のbit7が0だったので諦める
+
+; 画面モードの切り替え
+
+		MOV		BX,VBEMODE+0x4000			
+		MOV		AX,0x4f02
 		INT		0x10
 		MOV		BYTE [VMODE],8	; 画面モードをメモ する（C言語が参照する）
-		MOV		WORD [SCRNX],320
+		MOV		AX,[ES:DI+0x12]
+		MOV		[SCRNX],AX
+		MOV		AX,[ES:DI+0x14]
+		MOV		[SCRNY],AX
+		MOV 	EAX,[ES:DI+0x28]
+		MOV		[VRAM],EAX
+		JMP 	keystatus
+
+scrn320:
+
+		MOV 	AL,0x13						; VGAグラフィックス、320x200x8bitカラー
+		MOV		AH,0x00
+		INT		0x10
+		MOV		BYTE [VMODE],8
+		MOV 	WORD [SCRNX],320
 		MOV		WORD [SCRNY],200
 		MOV		DWORD [VRAM],0x000a0000
 
 ; キーボードのLED状態をBIOSに教えてもらう
+keystatus:
 
 		MOV		AH,0x02
 		INT		0x16 			; keyboard BIOS

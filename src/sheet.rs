@@ -97,9 +97,9 @@ impl SheetManager {
                 0
             } as usize;
             for by in by0..by1 {
-                let vy = sheet.y as usize + by;
+                let vy = (sheet.y + by as i32) as usize;
                 for bx in bx0..bx1 {
-                    let vx = sheet.x as usize + bx;
+                    let vx = (sheet.x + bx as i32) as usize;
                     let width = sheet.width as usize;
                     let c = unsafe { *((sheet.buf_addr + by * width + bx) as *const Color) };
                     if Some(c) != sheet.transparent {
@@ -139,9 +139,9 @@ impl SheetManager {
                 0
             } as usize;
             for by in by0..by1 {
-                let vy = sheet.y as usize + by;
+                let vy = (sheet.y + by as i32) as usize;
                 for bx in bx0..bx1 {
-                    let vx = sheet.x as usize + bx;
+                    let vx = (sheet.x + bx as i32) as usize;
                     let width = sheet.width as usize;
                     let map_si = unsafe {
                         *((self.map_addr as isize
