@@ -38,7 +38,7 @@ $(OUTPUT_DIR)/kernel.bin: $(OUTPUT_DIR)/libharibote_os.a $(OUTPUT_DIR_KEEP)
 
 $(OUTPUT_DIR)/libharibote_os.a: $(OUTPUT_DIR_KEEP)
 	cargo xbuild --target-dir $(OUTPUT_DIR)
-	cp $(OUTPUT_DIR)/i686-haribote/debug/libharibote_os.a $(OUTPUT_DIR)/
+	cp $(OUTPUT_DIR)/i386-haribote/debug/libharibote_os.a $(OUTPUT_DIR)/
 
 $(OUTPUT_DIR_KEEP):
 	mkdir -p $(OUTPUT_DIR)

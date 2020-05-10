@@ -1,10 +1,4 @@
 use core::cell::{Cell, RefCell};
-use lazy_static::lazy_static;
-use spin::Mutex;
-
-lazy_static! {
-    pub static ref FIFO_BUF: Mutex<Fifo> = Mutex::new(Fifo::new(128));
-}
 
 pub struct Fifo {
     pub buf: RefCell<[u32; 128]>,

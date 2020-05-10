@@ -3,7 +3,7 @@ use spin::Mutex;
 
 use crate::asm;
 use crate::interrupt::PIC0_OCW2;
-use crate::fifo::FIFO_BUF;
+use crate::fifo::Fifo;
 
 const PIT_CTRL: u32 = 0x0043;
 const PIT_CNT0: u32 = 0x0040;
@@ -21,6 +21,7 @@ pub enum TimerFlag {
 pub struct Timer {
     pub timeout: u32,
     pub flags: TimerFlag,
+    pub fifo: usize,
     pub data: u8,
     pub next: usize,
 }
@@ -30,6 +31,7 @@ impl Timer {
         Timer {
             timeout: 0,
             flags: TimerFlag::AVAILABLE,
+            fifo: 0,
             data: 0,
             next: 0,
         }
@@ -55,6 +57,7 @@ impl TimerManager {
         tm.timers_data[MAX_TIMER-1] = Timer {
             timeout: 0xffffffff,
             flags: TimerFlag::USING,
+            fifo: 0,
             data: 0,
             next: 0,
         };
@@ -76,8 +79,9 @@ impl TimerManager {
         timer.flags = TimerFlag::AVAILABLE;
     }
 
-    pub fn init_timer(&mut self, index: usize, data: u8) {
+    pub fn init_timer(&mut self, index: usize, fifo: usize, data: u8) {
         let mut timer = &mut self.timers_data[index];
+        timer.fifo = fifo;
         timer.data = data;
     }
 
@@ -150,7 +154,8 @@ pub extern "C" fn inthandler20() {
         }
         {
             let t = &tm.timers_data[timer_index];
-            FIFO_BUF.lock().put(t.data as u32).unwrap();
+            let fifo = unsafe { &*(t.fifo as *const Fifo) };
+            fifo.put(t.data as u32).unwrap();
             timer_index = t.next;
         }
     }

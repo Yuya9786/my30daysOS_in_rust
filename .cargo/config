@@ -1,2 +1,2 @@
 [build]
-target = "i686-haribote.json"
+target = "i386-haribote.json"

@@ -1,5 +1,5 @@
 use crate::asm::{in8, out8};
-use crate::fifo::FIFO_BUF;
+use crate::fifo::Fifo;
 
 // use lazy_static::lazy_static;
 // use spin::Mutex;
@@ -52,7 +52,6 @@ pub fn init() {
 pub fn allow_input() {
     out8(PIC0_IMR, 0xf8); // PITとPIC1とキーボードを許可(11111000)
     out8(PIC1_IMR, 0xef); // マウスを許可(11101111)
-    init_keyboard();
 }
 
 fn wait_kbc_sendready() {
@@ -65,14 +64,23 @@ fn wait_kbc_sendready() {
     return;
 }
 
-fn init_keyboard() {
+static mut KEY_FIFO_ADDR: usize = 0;
+static mut MOUSE_FIFO_ADDR: usize = 0;
+
+pub fn init_keyboard(fifo_addr: usize) {
+    unsafe {
+        KEY_FIFO_ADDR = fifo_addr;
+    }
     wait_kbc_sendready();
     out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
     wait_kbc_sendready();
     out8(PORT_KEYDAT, KBC_MODE);
 }
 
-pub fn enable_mouse() {
+pub fn enable_mouse(fifo_addr: usize) {
+    unsafe {
+        MOUSE_FIFO_ADDR = fifo_addr;
+    }
     wait_kbc_sendready();
     out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
     wait_kbc_sendready();
@@ -84,7 +92,8 @@ const KEYBOARD_OFFSET: u32 = 256;
 pub extern "C" fn inthandler21() {
     out8(PIC0_OCW2, 0x61); // IRQ-01 受付終了
     let key = in8(PORT_KEYDAT);
-    FIFO_BUF.lock().put(key as u32 + KEYBOARD_OFFSET).unwrap();
+    let fifo = unsafe { &*(KEY_FIFO_ADDR as *mut Fifo) };
+    fifo.put(key as u32 + KEYBOARD_OFFSET).unwrap();
 }
 
 const MOUSE_OFFSET: u32 = 512;
@@ -93,5 +102,6 @@ pub extern "C" fn inthandler2c() {
     out8(PIC1_OCW2, 0x64); // IRQ-12受付完了をPIC1に通知
     out8(PIC0_OCW2, 0x62); // IRQ-02受付完了をPIC0に通知
     let data = in8(PORT_KEYDAT);
-    FIFO_BUF.lock().put(data as u32 + MOUSE_OFFSET).unwrap();
+    let fifo = unsafe { &mut *(MOUSE_FIFO_ADDR as *mut Fifo) };
+    fifo.put(data as u32 + MOUSE_OFFSET).unwrap();
 }
