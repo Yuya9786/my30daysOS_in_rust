@@ -92,7 +92,7 @@ const KEYBOARD_OFFSET: u32 = 256;
 pub extern "C" fn inthandler21() {
     out8(PIC0_OCW2, 0x61); // IRQ-01 受付終了
     let key = in8(PORT_KEYDAT);
-    let fifo = unsafe { &*(KEY_FIFO_ADDR as *mut Fifo) };
+    let fifo = unsafe { &mut *(KEY_FIFO_ADDR as *mut Fifo) };
     fifo.put(key as u32 + KEYBOARD_OFFSET).unwrap();
 }
 

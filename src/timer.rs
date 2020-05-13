@@ -23,7 +23,7 @@ pub struct Timer {
     pub flags: TimerFlag,
     pub fifo: usize,
     pub data: u8,
-    pub next: usize,
+    pub next: Option<usize>,
 }
 
 impl Timer {
@@ -33,7 +33,7 @@ impl Timer {
             flags: TimerFlag::AVAILABLE,
             fifo: 0,
             data: 0,
-            next: 0,
+            next: None,
         }
     }
 }
@@ -41,7 +41,7 @@ impl Timer {
 pub struct TimerManager {
     pub count: u32,
     pub next_time: u32,
-    pub t0: usize,
+    pub t0: Option<usize>,
     pub timers_data: [Timer; MAX_TIMER],
 }
 
@@ -50,7 +50,7 @@ impl TimerManager {
         let mut tm = TimerManager {
             count: 0,
             next_time: 0xffffffff,
-            t0: MAX_TIMER - 1,
+            t0: Some(MAX_TIMER - 1),
             timers_data: [Timer::new(); MAX_TIMER],
         };
         // 番兵（お留守番君）
@@ -59,7 +59,7 @@ impl TimerManager {
             flags: TimerFlag::USING,
             fifo: 0,
             data: 0,
-            next: 0,
+            next: None,
         };
         tm
     }
@@ -91,31 +91,38 @@ impl TimerManager {
             timer.timeout = timeout + self.count;
             timer.flags = TimerFlag::USING;
         }
+        if self.t0.is_none() {
+            return;
+        }
         let eflags = asm::load_eflags();
         asm::cli();
-        let mut t_index = self.t0;
+        let mut t_index = self.t0.unwrap();
         if &self.timers_data[index].timeout <= &self.timers_data[t_index].timeout {
             // 先頭に入れる
-            self.t0 = index;
+            self.t0 = Some(index);
             let mut timer = &mut self.timers_data[index];
-            timer.next = t_index;
+            timer.next = Some(t_index);
             self.next_time = timer.timeout;
             asm::store_eflags(eflags);
             return;
         }
         // どこに入れれば良いか探す
-        let mut s_index = t_index; 
+        let mut s_index: usize; 
         loop {
             s_index = t_index;
-            t_index = self.timers_data[t_index].next;
+            if self.timers_data[t_index].next.is_none() {
+                asm::store_eflags(eflags);
+                break;
+            }
+            t_index = self.timers_data[t_index].next.unwrap();
             if &self.timers_data[index].timeout <= &self.timers_data[t_index].timeout {
                 {
                     let mut s = &mut self.timers_data[s_index];
-                    s.next = index;
+                    s.next = Some(index);
                 }
                 {
                     let mut timer = &mut self.timers_data[index];
-                    timer.next = t_index;
+                    timer.next = Some(t_index);
                 }
                 asm::store_eflags(eflags);
                 return;
@@ -134,6 +141,8 @@ pub fn init_pit() {
     asm::out8(PIT_CNT0, 0x2e);
 }
 
+pub static mut NEED_SWITCH: bool = false;
+
 pub extern "C" fn inthandler20() {
     asm::out8(PIC0_OCW2, 0x60); // IRQ-00受付完了をPICに通知
     let mut tm = TIMER_MANAGER.lock();
@@ -143,22 +152,31 @@ pub extern "C" fn inthandler20() {
     }
     
     let mut timer_index = tm.t0;
+    let mut need_taskswitch = false;
     loop {
+        let t_index = timer_index.unwrap();
         // timersのデータは全て動作中なので，flagsは確認しない
-        if tm.timers_data[timer_index].timeout > tm.count {
+        if tm.timers_data[t_index].timeout > tm.count {
             break;
         }
-        {   // タイムアウト
-            let mut t_mut = &mut tm.timers_data[timer_index];
-            t_mut.flags = TimerFlag::ALLOC;
-        }
-        {
-            let t = &tm.timers_data[timer_index];
-            let fifo = unsafe { &*(t.fifo as *const Fifo) };
+        // タイムアウト
+        let mut t = &mut tm.timers_data[t_index];
+        t.flags = TimerFlag::ALLOC;
+        if t_index != unsafe { crate::multi_task::MT_TIMER_INDEX } {
+            let fifo = unsafe { &mut *(t.fifo as *mut Fifo) };
             fifo.put(t.data as u32).unwrap();
-            timer_index = t.next;
+        } else {
+            need_taskswitch = true;
         }
+        timer_index = t.next;
     }
     tm.t0 = timer_index;
-    tm.next_time = tm.timers_data[tm.t0].timeout;
+    if let Some(t_index) = timer_index {
+        tm.next_time = tm.timers_data[t_index].timeout;
+    }
+    if need_taskswitch {
+        unsafe {
+            NEED_SWITCH = true;
+        }
+    }
 }

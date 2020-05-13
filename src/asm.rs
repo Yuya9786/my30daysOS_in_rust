@@ -100,9 +100,18 @@ pub fn taskswitch(adr: i32) {
     }
 }
 
-pub fn farjmp(eip: i32, cs: i32) {
+#[repr(C, packed)]
+struct Jump {
+    eip: i32,
+    cs: i32,
+}
+
+
+#[naked]
+#[no_mangle]
+pub extern "C" fn farjmp(eip: i32, cs: i32) {
     unsafe {
-        asm!("JMP $0,$1" :: "i"(cs), "i"(eip) :: "intel");
+        asm!("LJMPL *($0)" :: "r"(&Jump {eip, cs}) :: "volatile");
     }
 }
 
@@ -112,6 +121,8 @@ macro_rules! handler {
     ($name: ident) => {{
         #[naked]
         pub extern "C" fn wrapper() {
+            use crate::timer::NEED_SWITCH;
+            use crate::multi_task::{TaskManager, TASK_MANAGER_ADDR};
             unsafe {
                 asm!("PUSH ES
                       PUSH DS
@@ -122,6 +133,11 @@ macro_rules! handler {
                       MOV DS,AX
                       MOV ES,AX" : : : : "intel", "volatile");
                 asm!("CALL $0" : : "r"($name as extern "C" fn()) : : "intel");
+                if  NEED_SWITCH {
+                    NEED_SWITCH = false;
+                    let task_manager = &mut *(TASK_MANAGER_ADDR as *mut TaskManager);
+                    task_manager.switch();
+                }
                 asm!("POP EAX
                     POPAD
                     POP DS

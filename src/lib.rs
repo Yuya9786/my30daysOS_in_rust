@@ -50,6 +50,7 @@ lazy_static! {
     pub static ref binfo: BOOTINFO = BOOTINFO::new();
 }
 
+static mut SHTCTL_ADDR: usize = 0;
 
 #[no_mangle]
 #[start]
@@ -67,7 +68,7 @@ pub extern "C" fn HariMain() {
     };
     use keyboard::KEYTABLE;
     use descriptor_table::{ADR_GDT, AR_TSS32, SegmentDescriptor};
-    use multi_task::TSS;
+    use multi_task::{TSS, TaskManager, TASK_MANAGER_ADDR};
 
     let fifo = Fifo::new(128);
     let fifo_addr = &fifo as *const Fifo as usize;
@@ -81,9 +82,9 @@ pub extern "C" fn HariMain() {
     vga::init_palette();
     enable_mouse(fifo_addr);
 
-    let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
-    TIMER_MANAGER.lock().set_time(timer_ts, 2);
+    // let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
+    // TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
+    // TIMER_MANAGER.lock().set_time(timer_ts, 2);
     
     let timer_index1 = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_index1, fifo_addr, 10);
@@ -108,6 +109,9 @@ pub extern "C" fn HariMain() {
     let shtctl = unsafe {
         &mut *(shtctl_addr as *mut SheetManager)
     };
+    unsafe {
+        SHTCTL_ADDR = shtctl_addr as usize;
+    }
     let sht_map_addr = memman.alloc_4k(binfo.scrnx as u32 * binfo.scrny as u32).unwrap();
     *shtctl = SheetManager::new(sht_map_addr as i32);
     let sht_back = shtctl.alloc().unwrap();     // 背景
@@ -149,44 +153,41 @@ pub extern "C" fn HariMain() {
         32,
         Color::White,
         Color::DarkCyan,
-        27,
-        "total: {}MB  free: {}KB",
+        29,
+        "totalnn: {}MB  free: {}KB",
         memtotal / (1024 * 1024),
         memman.total() / 1024
     );
 
-    let mut tss_a: TSS = Default::default();
-    tss_a.ldtr = 0;
-    tss_a.iomap = 0x40000000;
-    let mut tss_b: TSS = Default::default();
-    tss_b.ldtr = 0;
-    tss_b.iomap = 0x40000000;
-    let gdt = unsafe { &mut *((ADR_GDT + 3 * 8) as *mut SegmentDescriptor) };
-    *gdt = SegmentDescriptor::new(103, &tss_a as *const TSS as i32, AR_TSS32);
-    let gdt = unsafe { &mut *((ADR_GDT + 4 * 8) as *mut SegmentDescriptor) };
-    *gdt = SegmentDescriptor::new(103, &tss_b as *const TSS as i32, AR_TSS32);
-    load_tr(3 * 8);
-    let task_b_esp = memman.alloc_4k(64 * 1024).unwrap() + 64 * 1024 - 12;
-    tss_b.eip = task_b_main as i32;
-    tss_b.eflags = 0x00000202;  // IF = 1
-    tss_b.eax = 0;
-    tss_b.ecx = 0;
-    tss_b.edx = 0;
-    tss_b.ebx = 0;
-    tss_b.esp = task_b_esp as i32;
+    let task_manager_addr = memman
+                .alloc_4k(core::mem::size_of::<TaskManager>() as u32)
+                .unwrap();
     unsafe {
-        *((task_b_esp + 4) as *mut usize) = shtctl_addr as usize;
-        *((task_b_esp + 8) as *mut usize) = sht_back;
+        TASK_MANAGER_ADDR = task_manager_addr as usize;
     }
-    tss_b.ebp = 0;
-    tss_b.esi = 0;
-    tss_b.edi = 0;
-    tss_b.es = 1 * 8;
-    tss_b.cs = 2 * 8;
-    tss_b.ss = 1 * 8;
-    tss_b.ds = 1 * 8;
-    tss_b.fs = 1 * 8;
-    tss_b.gs = 1 * 8; 
+
+    let task_manager = unsafe { &mut *(task_manager_addr as *mut TaskManager) };
+    *task_manager = TaskManager::new();
+    task_manager.init();
+    let task_b_index = task_manager.alloc().unwrap();
+    let mut task_b = &mut task_manager.tasks_data[task_b_index];
+    let task_b_esp = memman.alloc_4k(64 * 1024).unwrap() + 64 * 1024 - 8;
+    task_b.tss.esp = task_b_esp as i32;
+    task_b.tss.eip = task_b_main as i32;
+    task_b.tss.es = 1 * 8;
+    task_b.tss.cs = 2 * 8;
+    task_b.tss.ss = 1 * 8;
+    task_b.tss.ds = 1 * 8;
+    task_b.tss.fs = 1 * 8;
+    task_b.tss.gs = 1 * 8; 
+    let ptr = unsafe { &mut *((task_b_esp + 4) as *mut usize) };
+    *ptr = sht_back;
+    // unsafe {
+    //     *((task_b_esp + 4) as *mut usize) = shtctl_addr as usize;
+    //     *((task_b_esp + 8) as *mut usize) = sht_back;
+    // }
+    task_manager.run(task_b_index);
+
 
     // let mut count = 0;
     // let mut count_done = false;
@@ -196,14 +197,13 @@ pub extern "C" fn HariMain() {
     loop {
         // count += 1;
         cli();
-        
         if fifo.status() != 0 {
             let i = fifo.get().unwrap();
-            sti();
-            if i == 2 {
-                farjmp(0, 4 * 8);
-                TIMER_MANAGER.lock().set_time(timer_ts, 2);
-            } else
+            stihlt();
+            // if i == 2 {
+            //     farjmp(0, 4 * 8);
+            //     TIMER_MANAGER.lock().set_time(timer_ts, 2);
+            // } else
             if 256 <= i && i <= 511 {   // キーボード
                 write_with_bg!(
                     shtctl,
@@ -371,7 +371,7 @@ pub extern "C" fn HariMain() {
     }
 }
 
-fn task_b_main(shtctl_addr: usize, sht_back: usize) {
+pub extern "C" fn task_b_main(sht_back: usize) {
     use asm::{cli, sti, stihlt, farjmp};
     use fifo::Fifo;
     use timer::TIMER_MANAGER;
@@ -381,24 +381,37 @@ fn task_b_main(shtctl_addr: usize, sht_back: usize) {
     let fifo = Fifo::new(128);
     let fifo_addr = &fifo as *const Fifo as usize;
 
+    let shtctl_addr = unsafe { SHTCTL_ADDR };
     let shtctl = unsafe {
         &mut *(shtctl_addr as *mut SheetManager)
     };
 
-    let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
-    TIMER_MANAGER.lock().set_time(timer_ts, 2);
+    // let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
+    // TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
+    // TIMER_MANAGER.lock().set_time(timer_ts, 2);
 
-    let timer_put = TIMER_MANAGER.lock().alloc().unwrap();
-    TIMER_MANAGER.lock().init_timer(timer_put, fifo_addr, 1);
-    TIMER_MANAGER.lock().set_time(timer_put, 1);
+    // let timer_put = TIMER_MANAGER.lock().alloc().unwrap();
+    // TIMER_MANAGER.lock().init_timer(timer_put, fifo_addr, 1);
+    // TIMER_MANAGER.lock().set_time(timer_put, 1);
 
     let timer_1s = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_1s, fifo_addr, 100);
-    TIMER_MANAGER.lock().set_time(timer_1s, 100);
+    TIMER_MANAGER.lock().set_time(timer_1s, 1);
 
     let mut count = 0;
     let mut count0 = 0;
+    write_with_bg!(
+        shtctl,
+        sht_back,
+        *SCREEN_WIDTH as isize,
+        *SCREEN_HEIGHT as isize,
+        0,
+        144,
+        Color::White,
+        Color::DarkCyan,
+        12,
+        "task_b start"
+    );
     loop {
         count += 1;
         cli();
@@ -407,25 +420,27 @@ fn task_b_main(shtctl_addr: usize, sht_back: usize) {
         } else {
             let i = fifo.get().unwrap();
             sti();
-            if i == 1 {
-                write_with_bg!(
-                    shtctl,
-                    sht_back,
-                    *SCREEN_WIDTH as isize,
-                    *SCREEN_HEIGHT as isize,
-                    10,
-                    144,
-                    Color::White,
-                    Color::DarkCyan,
-                    11,
-                    "{:>11}",
-                    count
-                );
-                TIMER_MANAGER.lock().set_time(timer_put, 1);
-            } else if i == 2 {
-                farjmp(0, 3 * 8);
-                TIMER_MANAGER.lock().set_time(timer_ts, 2);
-            } else if i == 100 {
+            // if i == 1 {
+            //     write_with_bg!(
+            //         shtctl,
+            //         sht_back,
+            //         *SCREEN_WIDTH as isize,
+            //         *SCREEN_HEIGHT as isize,
+            //         10,
+            //         144,
+            //         Color::White,
+            //         Color::DarkCyan,
+            //         11,
+            //         "{:>11}",
+            //         count
+            //     );
+            //     TIMER_MANAGER.lock().set_time(timer_put, 1);
+            //} else 
+            // if i == 2 {
+            //     farjmp(0, 3 * 8);
+            //     TIMER_MANAGER.lock().set_time(timer_ts, 2);
+            // } else 
+            if i == 100 {
                 write_with_bg!(
                     shtctl,
                     sht_back,
@@ -437,10 +452,9 @@ fn task_b_main(shtctl_addr: usize, sht_back: usize) {
                     Color::DarkCyan,
                     11,
                     "{:>11}",
-                    count - count0
+                    count
                 );
-                count0 = count;
-                TIMER_MANAGER.lock().set_time(timer_1s, 100);
+                TIMER_MANAGER.lock().set_time(timer_1s, 800);
             }
         }
     }
