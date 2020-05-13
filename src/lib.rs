@@ -82,9 +82,6 @@ pub extern "C" fn HariMain() {
     vga::init_palette();
     enable_mouse(fifo_addr);
 
-    // let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
-    // TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
-    // TIMER_MANAGER.lock().set_time(timer_ts, 2);
     
     let timer_index1 = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_index1, fifo_addr, 10);
@@ -160,15 +157,17 @@ pub extern "C" fn HariMain() {
     );
 
     let task_manager_addr = memman
-                .alloc_4k(core::mem::size_of::<TaskManager>() as u32)
-                .unwrap();
+        .alloc_4k(core::mem::size_of::<TaskManager>() as u32)
+        .unwrap();
     unsafe {
         TASK_MANAGER_ADDR = task_manager_addr as usize;
     }
 
     let task_manager = unsafe { &mut *(task_manager_addr as *mut TaskManager) };
     *task_manager = TaskManager::new();
-    task_manager.init();
+    let task_a_index = task_manager.init();
+    fifo.set_task(task_a_index);
+
     let task_b_index = task_manager.alloc().unwrap();
     let mut task_b = &mut task_manager.tasks_data[task_b_index];
     let task_b_esp = memman.alloc_4k(64 * 1024).unwrap() + 64 * 1024 - 8;
@@ -182,20 +181,12 @@ pub extern "C" fn HariMain() {
     task_b.tss.gs = 1 * 8; 
     let ptr = unsafe { &mut *((task_b_esp + 4) as *mut usize) };
     *ptr = sht_back;
-    // unsafe {
-    //     *((task_b_esp + 4) as *mut usize) = shtctl_addr as usize;
-    //     *((task_b_esp + 8) as *mut usize) = sht_back;
-    // }
     task_manager.run(task_b_index);
 
-
-    // let mut count = 0;
-    // let mut count_done = false;
 
     let mut cursor_x = 8;
     let mut cursor_c = Color::White;
     loop {
-        // count += 1;
         cli();
         if fifo.status() != 0 {
             let i = fifo.get().unwrap();
@@ -366,7 +357,8 @@ pub extern "C" fn HariMain() {
                 shtctl.refresh(sht_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44);
             }
         } else {
-            stihlt();
+            task_manager.sleep(task_a_index);
+            sti();
         }
     }
 }
@@ -386,17 +378,12 @@ pub extern "C" fn task_b_main(sht_back: usize) {
         &mut *(shtctl_addr as *mut SheetManager)
     };
 
-    // let timer_ts = TIMER_MANAGER.lock().alloc().unwrap();
-    // TIMER_MANAGER.lock().init_timer(timer_ts, fifo_addr, 2);
-    // TIMER_MANAGER.lock().set_time(timer_ts, 2);
-
-    // let timer_put = TIMER_MANAGER.lock().alloc().unwrap();
-    // TIMER_MANAGER.lock().init_timer(timer_put, fifo_addr, 1);
-    // TIMER_MANAGER.lock().set_time(timer_put, 1);
-
+    let timer_put = TIMER_MANAGER.lock().alloc().unwrap();
+    TIMER_MANAGER.lock().init_timer(timer_put, fifo_addr, 1);
+    TIMER_MANAGER.lock().set_time(timer_put, 1);
     let timer_1s = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_1s, fifo_addr, 100);
-    TIMER_MANAGER.lock().set_time(timer_1s, 1);
+    TIMER_MANAGER.lock().set_time(timer_1s, 100);
 
     let mut count = 0;
     let mut count0 = 0;
@@ -420,26 +407,22 @@ pub extern "C" fn task_b_main(sht_back: usize) {
         } else {
             let i = fifo.get().unwrap();
             sti();
-            // if i == 1 {
-            //     write_with_bg!(
-            //         shtctl,
-            //         sht_back,
-            //         *SCREEN_WIDTH as isize,
-            //         *SCREEN_HEIGHT as isize,
-            //         10,
-            //         144,
-            //         Color::White,
-            //         Color::DarkCyan,
-            //         11,
-            //         "{:>11}",
-            //         count
-            //     );
-            //     TIMER_MANAGER.lock().set_time(timer_put, 1);
-            //} else 
-            // if i == 2 {
-            //     farjmp(0, 3 * 8);
-            //     TIMER_MANAGER.lock().set_time(timer_ts, 2);
-            // } else 
+            if i == 1 {
+                write_with_bg!(
+                    shtctl,
+                    sht_back,
+                    *SCREEN_WIDTH as isize,
+                    *SCREEN_HEIGHT as isize,
+                    10,
+                    144,
+                    Color::White,
+                    Color::DarkCyan,
+                    11,
+                    "{:>11}",
+                    count
+                );
+                TIMER_MANAGER.lock().set_time(timer_put, 1);
+            } else 
             if i == 100 {
                 write_with_bg!(
                     shtctl,
@@ -452,9 +435,10 @@ pub extern "C" fn task_b_main(sht_back: usize) {
                     Color::DarkCyan,
                     11,
                     "{:>11}",
-                    count
+                    count - count0
                 );
-                TIMER_MANAGER.lock().set_time(timer_1s, 800);
+                count0 = count;
+                TIMER_MANAGER.lock().set_time(timer_1s, 100);
             }
         }
     }

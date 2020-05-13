@@ -78,7 +78,7 @@ impl TaskManager {
         }
     }
 
-    pub fn init(&mut self) {
+    pub fn init(&mut self) -> usize {
         for i in 0..MAX_TASKS {
             let mut task = &mut self.tasks_data[i];
             task.sel = (TASK_GDT0 + i) as i32 * 8;
@@ -97,6 +97,7 @@ impl TaskManager {
         unsafe {
             MT_TIMER_INDEX = task_timer;
         }
+        task_index
     }
 
     pub fn alloc(&mut self) -> Result<usize, &'static str> {
@@ -139,6 +140,42 @@ impl TaskManager {
                 self.now = 0;
             }
             crate::asm::farjmp(0, self.tasks_data[self.tasks[self.now]].sel);
+        }
+    }
+
+    pub fn sleep(&mut self, task_index: usize) {
+        let mut ts: bool = false;
+        let task = &mut self.tasks_data[task_index];
+        if task.flags == TaskFlag::RUNNING {
+            if task_index == self.tasks[self.now] {
+                ts = true;      // 自分自身を寝かせるので，あとでタスクスイッチ
+            }
+            // taskが今どこにいるのか探す
+            let mut position: usize = 0;
+            for i in 0..self.running {
+                position = i;
+                if self.tasks[i] == task_index {
+                    // ここにいた
+                    break;
+                }
+            }
+            self.running -= 1;
+            if position < self.now {
+                self.now -= 1;  // ずれるので，合わせておく
+            }
+            // ずらし
+            for i in position..self.running {
+                self.tasks[i] = self.tasks[i +1];
+            }
+            task.flags = TaskFlag::ALLOC;   // 動作していない状態
+            if ts {
+                // タスクスイッチする
+                if self.now >= self.running {
+                    // nowがおかしな値になっていたら修正する
+                    self.now = 0;
+                }
+                asm::farjmp(0, self.tasks_data[self.tasks[self.now]].sel);
+            }
         }
     }
 }

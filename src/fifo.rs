@@ -1,4 +1,5 @@
 use core::cell::{Cell, RefCell};
+use crate::multi_task::{TaskManager, TASK_MANAGER_ADDR, TaskFlag};
 
 pub struct Fifo {
     pub buf: RefCell<[u32; 128]>,
@@ -7,6 +8,7 @@ pub struct Fifo {
     pub free: Cell<u32>,
     pub flags: Cell<u32>,
     pub size: u32,
+    pub task_index: Cell<Option<usize>>,
 }
 
 const FLAGS_OVERRUN: u32 = 0x0001;
@@ -20,6 +22,7 @@ impl Fifo {
             flags: Cell::new(0),
             size: size,
             buf: RefCell::new([0; 128]),
+            task_index: Cell::new(None),
         }
     }
 
@@ -37,6 +40,13 @@ impl Fifo {
             self.p.set(0);
         }
         self.free.set(self.free.get() - 1);
+        if let Some(index) = self.task_index.get() {
+            let task_manager = unsafe { &mut *(TASK_MANAGER_ADDR as *mut TaskManager) };
+            if task_manager.tasks_data[index].flags != TaskFlag::RUNNING {
+                // 本では != 2 となっていた
+                task_manager.run(index);    // 起こす
+            }
+        }
         return Ok(());
     }
 
@@ -55,5 +65,9 @@ impl Fifo {
 
     pub fn status(&self) -> u32 {
         self.size - self.free.get()
+    }
+
+    pub fn set_task(&self, task_index: usize) {
+        self.task_index.set(Some(task_index));
     }
 }
