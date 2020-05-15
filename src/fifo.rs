@@ -43,8 +43,7 @@ impl Fifo {
         if let Some(index) = self.task_index.get() {
             let task_manager = unsafe { &mut *(TASK_MANAGER_ADDR as *mut TaskManager) };
             if task_manager.tasks_data[index].flags != TaskFlag::RUNNING {
-                // 本では != 2 となっていた
-                task_manager.run(index);    // 起こす
+                task_manager.run(index, -1, 0);    // 起こす
             }
         }
         return Ok(());
