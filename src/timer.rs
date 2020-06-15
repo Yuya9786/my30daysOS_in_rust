@@ -163,7 +163,7 @@ pub extern "C" fn inthandler20() {
         let mut t = &mut tm.timers_data[t_index];
         t.flags = TimerFlag::ALLOC;
         if t_index != unsafe { crate::multi_task::MT_TIMER_INDEX } {
-            let fifo = unsafe { &mut *(t.fifo as *mut Fifo) };
+            let fifo = unsafe { &*(t.fifo as *mut Fifo) };
             fifo.put(t.data as u32).unwrap();
         } else {
             need_taskswitch = true;

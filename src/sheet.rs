@@ -61,6 +61,23 @@ impl SheetManager {
         }
     }
 
+    pub fn set_buf(
+        &mut self,
+        sheet_index: usize,
+        buf_addr: usize,
+        width: i32,
+        height: i32,
+        transparent: Option<Color>,
+    ) {
+        let sheet = &mut self.sheets_data[sheet_index];
+        sheet.set(buf_addr, width, height, transparent);
+    }
+
+    pub fn get_buf_addr(&self, sheet_index: usize) -> usize {
+        let sheet = &self.sheets_data[sheet_index];
+        sheet.buf_addr
+    }
+
     pub fn alloc(&mut self) -> Option<usize> {
         for i in 0..MAX_SHEETS {
             if self.sheets_data[i].flag == SheetFlag::AVAILABLE {
@@ -279,7 +296,7 @@ impl SheetManager {
         }
     }
 
-    pub fn slide_by_diff(&mut self, sheet_index: usize, dx: i32, dy: i32) {
+    pub fn get_new_point(&self, sheet_index: usize, dx: i32, dy: i32) -> (i32, i32) {
         let scrnx = *SCREEN_WIDTH as i32;
         let scrny = *SCREEN_HEIGHT as i32;
         let sheet = self.sheets_data[sheet_index];
@@ -297,6 +314,11 @@ impl SheetManager {
         } else if new_y > ymax {
             new_y = ymax;
         }
+        return (new_x, new_y);
+    }
+
+    pub fn slide_by_diff(&mut self, sheet_index: usize, dx: i32, dy: i32) {
+        let (new_x, new_y) = self.get_new_point(sheet_index, dx, dy);
         self.slide(sheet_index, new_x, new_y);
     }
 

@@ -88,24 +88,24 @@ pub fn load_idtr(limit: i32, adr: i32) {
     }
 }
 
-pub fn load_tr(tr: i32) {
+pub fn load_tr(adr: i32) {
     unsafe {
-        asm!("LTR [$0]" :: "r"(&tr) : "memory" : "intel");
+        asm!("LTR [$0]" :: "r"(&adr) : "memory" : "intel");
     }
 }
 
-pub fn taskswitch(adr: i32) {
-    unsafe {
-        asm!("JMP $0,0" :: "i"(adr) :: "intel");
-    }
-}
+// #[naked]
+// pub fn farjmp(eip: i32, cs: i32) {
+//     unsafe {
+//         asm!("LJMP $0,$1" :: "i"(cs), "i"(eip));
+//     }
+// }
 
 #[repr(C, packed)]
 struct Jump {
     eip: i32,
     cs: i32,
 }
-
 
 #[naked]
 #[no_mangle]
@@ -114,7 +114,6 @@ pub extern "C" fn farjmp(eip: i32, cs: i32) {
         asm!("LJMPL *($0)" :: "r"(&Jump {eip, cs}) :: "volatile");
     }
 }
-
 
 #[macro_export]
 macro_rules! handler {
