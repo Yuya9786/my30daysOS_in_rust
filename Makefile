@@ -15,6 +15,8 @@ $(OUTPUT_DIR)/haribote.sys : $(OUTPUT_DIR)/asmhead.bin $(OUTPUT_DIR)/kernel.bin
 $(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys Makefile
 	mformat -f 1440 -C -B $< -i $@ ::
 	mcopy -i $@ $(OUTPUT_DIR)/haribote.sys ::
+	mcopy -i $@ src/lib.rs ::
+	mcopy -i $@ asm/ipl10.asm ::
 
 asm :
 	make $(OUTPUT_DIR)/ipl.bin 

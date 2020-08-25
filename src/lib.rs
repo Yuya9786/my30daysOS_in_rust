@@ -5,6 +5,7 @@
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use core::str::from_utf8;
 
 use asm::{cli, out8, sti};
 use fifo::Fifo;
@@ -13,12 +14,13 @@ use keyboard::{wait_kbc_sendready, KEYBOARD_OFFSET, KEYCMD_LED, KEYTABLE0, KEYTA
 use memory::{MemMan, MEMMAN_ADDR};
 use mouse::{Mouse, MouseDec, MOUSE_CURSOR_HEIGHT, MOUSE_CURSOR_WIDTH};
 use multi_task::{TaskManager, TASK_MANAGER_ADDR};
-use sheet::SheetManager;
+use sheet::{SheetManager, Sheet};
 use timer::TIMER_MANAGER;
 use vga::{
     boxfill, init_palette, init_screen, make_textbox, make_window, make_wtitle, Color,
     ScreenWriter, SCREEN_HEIGHT, SCREEN_WIDTH,
 };
+use file::{FileInfo, ADR_DISKIMG, ADR_FILE_OFFSET, MAX_FILE_INFO};
 
 mod asm;
 mod descriptor_table;
@@ -32,8 +34,12 @@ mod multi_task;
 mod sheet;
 mod timer;
 mod vga;
+mod file;
 
 static mut SHEET_MANAGER_ADDR: usize = 0;
+const CONSOLE_CURSOR_ON: u32 = 2;
+const CONSOLE_CURSOR_OFF: u32 = 3;
+const CONSOLE_ENTER: u32 = 10;
 
 #[no_mangle]
 #[start]
@@ -114,21 +120,6 @@ pub extern "C" fn HariMain() {
     make_window(buf_win_addr, 144, 52, "task_a", true);
     make_textbox(buf_win_addr, 144, 8, 28, 128, 16, Color::White);
 
-    write_with_bg!(
-        sheet_manager,
-        shi_bg,
-        *SCREEN_WIDTH as isize,
-        *SCREEN_HEIGHT as isize,
-        0,
-        32,
-        Color::White,
-        Color::DarkCyan,
-        27,
-        "total: {:>2}MB  free: {:>6}KB",
-        memtotal / (1024 * 1024),
-        memman.total() / 1024
-    );
-
     task_manager.run(task_a_index, 1, 2);
 
     const CONSOLE_WIDTH: usize = 256;
@@ -163,7 +154,7 @@ pub extern "C" fn HariMain() {
     );
     let console_task_index = task_manager.alloc().unwrap();
     let mut console_task_mut = &mut task_manager.tasks_data[console_task_index];
-    let console_esp = memman.alloc_4k(64 * 1024).unwrap() + 64 * 1024 - 8;
+    let console_esp = memman.alloc_4k(64 * 1024).unwrap() + 64 * 1024 - 12;
     console_task_mut.tss.esp = console_esp as i32;
     console_task_mut.tss.eip = console_task as i32;
     console_task_mut.tss.es = 1 * 8;
@@ -174,6 +165,8 @@ pub extern "C" fn HariMain() {
     console_task_mut.tss.gs = 1 * 8;
     let ptr = unsafe { &mut *((console_task_mut.tss.esp + 4) as *mut usize) };
     *ptr = shi_console;
+    let ptr = unsafe { &mut *((console_task_mut.tss.esp + 8) as *mut u32) };
+    *ptr = memtotal;
     task_manager.run(console_task_index, 2, 2);
 
     sheet_manager.slide(shi_mouse, mx, my);
@@ -202,6 +195,8 @@ pub extern "C" fn HariMain() {
     keycmd.put(KEYCMD_LED as u32).unwrap();
     keycmd.put(lock_keys.as_bytes() as u32).unwrap();
 
+    let mut cursor_on = true;    // カーソルを点滅するかどうか
+
     loop {
         // キーボードコントローラに送ルデータがあれば送る
         if keycmd.status() > 0 && keycmd_wait < 0 {
@@ -215,19 +210,6 @@ pub extern "C" fn HariMain() {
             sti();
             if KEYBOARD_OFFSET <= i && i <= 511 {
                 let key = i - KEYBOARD_OFFSET;
-                write_with_bg!(
-                    sheet_manager,
-                    shi_bg,
-                    *SCREEN_WIDTH as isize,
-                    *SCREEN_HEIGHT as isize,
-                    0,
-                    0,
-                    Color::White,
-                    Color::DarkCyan,
-                    2,
-                    "{:x}",
-                    key
-                );
                 let mut chr = 0 as u8;
                 if key < KEYTABLE0.len() as u32 {
                     if key_shift == (false, false) {
@@ -296,6 +278,7 @@ pub extern "C" fn HariMain() {
                     let sheet_console = sheet_manager.sheets_data[shi_console];
                     if active_window == 0 {
                         active_window = 1;
+                        cursor_on = false;  // カーソルを消す
                         make_wtitle(
                             sheet_win.buf_addr,
                             sheet_win.width as isize,
@@ -310,8 +293,13 @@ pub extern "C" fn HariMain() {
                             "console",
                             true,
                         );
+                        cursor_c = Color::White;
+                        let ctask = task_manager.tasks_data[console_task_index];
+                        let fifo = unsafe { &*(ctask.fifo_addr as *const Fifo) };
+                        fifo.put(CONSOLE_CURSOR_ON).unwrap();
                     } else {
                         active_window = 0;
+                        cursor_on = true;  // カーソルを表示
                         make_wtitle(
                             sheet_win.buf_addr,
                             sheet_win.width as isize,
@@ -326,6 +314,10 @@ pub extern "C" fn HariMain() {
                             "console",
                             false,
                         );
+                        cursor_c = Color::Black;
+                        let ctask = task_manager.tasks_data[console_task_index];
+                        let fifo = unsafe { &*(ctask.fifo_addr as *const Fifo) };
+                        fifo.put(CONSOLE_CURSOR_OFF).unwrap();
                     }
                     sheet_manager.refresh(shi_win, 0, 0, sheet_win.width, 21);
                     sheet_manager.refresh(shi_console, 0, 0, sheet_console.width, 21);
@@ -364,6 +356,14 @@ pub extern "C" fn HariMain() {
                     keycmd.put(KEYCMD_LED as u32).unwrap();
                     keycmd.put(lock_keys.as_bytes() as u32).unwrap();
                 }
+                // Enter
+                if key == 0x1c {
+                    if active_window != 0 {
+                        let ctask = task_manager.tasks_data[console_task_index];
+                        let fifo = unsafe { &*(ctask.fifo_addr as *const Fifo) };
+                        fifo.put(CONSOLE_ENTER + KEYBOARD_OFFSET).unwrap();
+                    }
+                }
                 // キーボードがデータを無事に受け取った
                 if key == 0xfa {
                     keycmd_wait = -1;
@@ -373,39 +373,12 @@ pub extern "C" fn HariMain() {
                     wait_kbc_sendready();
                     out8(PORT_KEYDAT, keycmd_wait as u8);
                 }
-                boxfill(buf_win_addr, 144, cursor_c, cursor_x, 28, cursor_x + 8, 43);
+                if cursor_on {
+                    boxfill(buf_win_addr, 144, cursor_c, cursor_x, 28, cursor_x + 8, 43);
+                }
                 sheet_manager.refresh(shi_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44)
             } else if 512 <= i && i <= 767 {
                 if mouse_dec.decode((i - 512) as u8).is_some() {
-                    write_with_bg!(
-                        sheet_manager,
-                        shi_bg,
-                        *SCREEN_WIDTH as isize,
-                        *SCREEN_HEIGHT as isize,
-                        32,
-                        0,
-                        Color::White,
-                        Color::DarkCyan,
-                        15,
-                        "[{}{}{} {:>4},{:>4}]",
-                        if (mouse_dec.btn.get() & 0x01) != 0 {
-                            'L'
-                        } else {
-                            'l'
-                        },
-                        if (mouse_dec.btn.get() & 0x04) != 0 {
-                            'C'
-                        } else {
-                            'c'
-                        },
-                        if (mouse_dec.btn.get() & 0x02) != 0 {
-                            'R'
-                        } else {
-                            'r'
-                        },
-                        mouse_dec.x.get(),
-                        mouse_dec.y.get(),
-                    );
                     let (new_x, new_y) = sheet_manager.get_new_point(
                         shi_mouse,
                         mouse_dec.x.get(),
@@ -420,14 +393,20 @@ pub extern "C" fn HariMain() {
             } else {
                 if i != 0 {
                     TIMER_MANAGER.lock().init_timer(timer_index3, fifo_addr, 0);
-                    cursor_c = Color::Black;
+                    cursor_c = if cursor_on {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
                 } else {
                     TIMER_MANAGER.lock().init_timer(timer_index3, fifo_addr, 1);
                     cursor_c = Color::White;
                 }
                 TIMER_MANAGER.lock().set_time(timer_index3, 50);
-                boxfill(buf_win_addr, 144, cursor_c, cursor_x, 28, cursor_x + 8, 43);
-                sheet_manager.refresh(shi_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44)
+                if cursor_on {
+                    boxfill(buf_win_addr, 144, cursor_c, cursor_x, 28, cursor_x + 8, 43);
+                    sheet_manager.refresh(shi_win, cursor_x as i32, 28, cursor_x as i32 + 8, 44)
+                }
             }
         } else {
             task_manager.sleep(task_a_index);
@@ -436,7 +415,7 @@ pub extern "C" fn HariMain() {
     }
 }
 
-pub extern "C" fn console_task(sheet_index: usize) {
+pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     let task_manager = unsafe { &mut *(TASK_MANAGER_ADDR as *mut TaskManager) };
     let task_index = task_manager.now_index();
 
@@ -448,18 +427,23 @@ pub extern "C" fn console_task(sheet_index: usize) {
     }
 
     let mut cursor_x: isize = 16;
+    let mut cursor_y: isize = 28;
     let mut cursor_c = Color::Black;
     let min_cursor_x = 16;
+    let min_cursor_y = 28;
     let max_cursor_x = 240;
+    let max_cursor_y = 140;
+
+    let mut cmdline: [u8; 30] = [0; 30];
 
     let sheet_manager_addr = unsafe { SHEET_MANAGER_ADDR };
     let sheet_manager = unsafe { &mut *(sheet_manager_addr as *mut SheetManager) };
+    let sheet = sheet_manager.sheets_data[sheet_index];
 
     let timer_index = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_index, fifo_addr, 1);
     TIMER_MANAGER.lock().set_time(timer_index, 50);
-    let sheet = sheet_manager.sheets_data[sheet_index];
-
+    
     // プロンプト表示
     write_with_bg!(
         sheet_manager,
@@ -474,6 +458,8 @@ pub extern "C" fn console_task(sheet_index: usize) {
         ">"
     );
 
+    let mut cursor_on = false;
+
     loop {
         cli();
         if fifo.status() == 0 {
@@ -485,12 +471,20 @@ pub extern "C" fn console_task(sheet_index: usize) {
             if i <= 1 {
                 if i != 0 {
                     TIMER_MANAGER.lock().init_timer(timer_index, fifo_addr, 0);
-                    cursor_c = Color::White;
+                    cursor_c = if cursor_on {
+                        Color::White
+                    } else {
+                        Color::Black
+                    };
                 } else {
                     TIMER_MANAGER.lock().init_timer(timer_index, fifo_addr, 1);
                     cursor_c = Color::Black;
                 }
                 TIMER_MANAGER.lock().set_time(timer_index, 50);
+            } else if i == 2 {
+                cursor_on = true;
+            } else if i == 3 {
+                cursor_on = false;
             } else if KEYBOARD_OFFSET <= i && i <= 511 {
                 let key = (i - KEYBOARD_OFFSET) as u8;
                 if key != 0 {
@@ -502,7 +496,7 @@ pub extern "C" fn console_task(sheet_index: usize) {
                                 sheet.width,
                                 sheet.height,
                                 cursor_x,
-                                28,
+                                cursor_y,
                                 Color::White,
                                 Color::Black,
                                 1,
@@ -510,15 +504,149 @@ pub extern "C" fn console_task(sheet_index: usize) {
                             );
                             cursor_x -= 8;
                         }
+                    } else if key == CONSOLE_ENTER as u8 {
+                        // Enter
+                        // カーソルをスペースで消す
+                        write_with_bg!(
+                            sheet_manager,
+                            sheet_index,
+                            sheet.width,
+                            sheet.height,
+                            cursor_x,
+                            cursor_y,
+                            Color::White,
+                            Color::Black,
+                            1,
+                            " "
+                        );
+                        let cmd_end = cursor_x as usize / 8 - 2;
+                        cmdline[cmd_end] = 0;
+                        cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                        let cmd = from_utf8(&cmdline[0..cmd_end]).unwrap();
+
+                        // コマンド実行
+                        match cmd {
+                            "mem" => {
+                                // memコマンド
+                                let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MemMan) };
+                                write_with_bg!(
+                                    sheet_manager,
+                                    sheet_index,
+                                    sheet.width,
+                                    sheet.height,
+                                    8,
+                                    cursor_y,
+                                    Color::White,
+                                    Color::Black,
+                                    30,
+                                    "total   {}MB",
+                                    memtotal / (1024 * 1024)
+                                );
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                                write_with_bg!(
+                                    sheet_manager,
+                                    sheet_index,
+                                    sheet.width,
+                                    sheet.height,
+                                    8,
+                                    cursor_y,
+                                    Color::White,
+                                    Color::Black,
+                                    30,
+                                    "free {}KB",
+                                    memman.total() / 1024
+                                );
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                            },
+                            "clear" => {
+                                for y in 28..28+128 {
+                                    for x in 8..8+240 {
+                                        let ptr = unsafe {
+                                            &mut *((sheet.buf_addr + x + y * sheet.width as usize) as *mut u8)
+                                        };
+                                        *ptr = Color::Black as u8;
+                                    }
+                                    sheet_manager.refresh(
+                                        sheet_index, 8, 28, 8+240, 28+128
+                                    );
+                                    cursor_y = 28;
+                                }
+                            },
+                            "ls" => {
+                                for x in 0..MAX_FILE_INFO {
+                                    let finfo = unsafe {
+                                        *((ADR_DISKIMG + ADR_FILE_OFFSET + x * core::mem::size_of::<FileInfo>()) as *const FileInfo)
+                                    };
+                                    if finfo.name[0] == 0x00 {
+                                        break;
+                                    }
+                                    if finfo.name[0] != 0xe5 {
+                                        if (finfo.ftype & 0x18) == 0 {
+                                            write_with_bg!(
+                                                sheet_manager,
+                                                sheet_index,
+                                                sheet.width,
+                                                sheet.height,
+                                                8,
+                                                cursor_y,
+                                                Color::White,
+                                                Color::Black,
+                                                30,
+                                                "{:>8}.{:>3}     {:>7}",
+                                                from_utf8(&finfo.name).unwrap(),
+                                                from_utf8(&finfo.ext).unwrap(),
+                                                finfo.size
+                                            );
+                                            cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                                        }
+                                    }
+                                }
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                            },
+                            _ => {
+                                write_with_bg!(
+                                    sheet_manager,
+                                    sheet_index,
+                                    sheet.width,
+                                    sheet.height,
+                                    8,
+                                    cursor_y,
+                                    Color::White,
+                                    Color::Black,
+                                    22,
+                                    "Unknown Command: {}",
+                                    cmd
+                                );
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                                cursor_y = cons_newline(cursor_y, sheet_manager, sheet_index);
+                            },
+                        }
+                        
+                        // プロンプト表示
+                        write_with_bg!(
+                            sheet_manager,
+                            sheet_index,
+                            sheet.width,
+                            sheet.height,
+                            8,
+                            cursor_y,
+                            Color::White,
+                            Color::Black,
+                            1,
+                            ">"
+                        );
+                        cursor_x = 16;
                     } else {
                         if cursor_x < max_cursor_x {
+                            cmdline[cursor_x as usize / 8 - 2] = key;
                             write_with_bg!(
                                 sheet_manager,
                                 sheet_index,
                                 sheet.width,
                                 sheet.height,
                                 cursor_x,
-                                28,
+                                cursor_y,
                                 Color::White,
                                 Color::Black,
                                 1,
@@ -530,18 +658,62 @@ pub extern "C" fn console_task(sheet_index: usize) {
                     }
                 }
             }
-            boxfill(
-                sheet.buf_addr,
-                sheet.width as isize,
-                cursor_c,
-                cursor_x,
-                28,
-                cursor_x + 7,
-                43,
-            );
-            sheet_manager.refresh(sheet_index, cursor_x as i32, 28, cursor_x as i32 + 8, 44);
+            if cursor_on {
+                boxfill(
+                    sheet.buf_addr,
+                    sheet.width as isize,
+                    cursor_c,
+                    cursor_x,
+                    cursor_y,
+                    cursor_x + 7,
+                    cursor_y + 15,
+                );
+            }
+            sheet_manager.refresh(sheet_index, cursor_x as i32, cursor_y as i32, cursor_x as i32 + 8, cursor_y as i32 + 16);
         }
     }
+}
+
+fn cons_newline(cursor_y: isize, sheet_manager: &SheetManager, sheet_index: usize) -> isize {
+    let sheet = sheet_manager.sheets_data[sheet_index];
+
+    let min_cursor_x = 8;
+    let max_cursor_x = 248;
+    let min_cursor_y = 28;
+    let max_cursor_y = 140;
+    let mut cursor_y = cursor_y;
+    if cursor_y < max_cursor_y {
+        cursor_y += 16; // 次の行へ
+    } else {
+        // スクロール
+        for y in min_cursor_y..max_cursor_y {
+            for x in 8..(max_cursor_x + 8) {
+                let x = x as usize;
+                let y = y as usize;
+                // スクロール
+                let ptr = unsafe {
+                    &mut *((sheet.buf_addr + x + y * sheet.width as usize) as *mut u8)
+                };
+                *ptr = unsafe {
+                    *((sheet.buf_addr + x + (y + 16) * sheet.width as usize) as *const u8)
+                }
+            }
+        }
+        for y in max_cursor_y..(max_cursor_y + 16) {
+            for x in 8..(max_cursor_x + 8) {
+                let x = x as usize;
+                let y = y as usize;
+                // スクロール
+                let ptr = unsafe {
+                    &mut *((sheet.buf_addr + x + y * sheet.width as usize) as *mut u8)
+                };
+                *ptr = Color::Black as u8;
+            }
+        }
+        sheet_manager.refresh(sheet_index, 8, min_cursor_y as i32, max_cursor_x as i32 + 8, max_cursor_y as i32 + 16);
+    }
+
+    cursor_y
 }
 
 #[panic_handler]
