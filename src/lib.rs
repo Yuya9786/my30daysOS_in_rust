@@ -20,7 +20,7 @@ use vga::{
     boxfill, init_palette, init_screen, make_textbox, make_window, make_wtitle, Color,
     ScreenWriter, SCREEN_HEIGHT, SCREEN_WIDTH,
 };
-use file::{FileInfo, ADR_DISKIMG, ADR_FILE_OFFSET, MAX_FILE_INFO};
+use file::{FileInfo, ADR_DISKIMG, ADR_FILE_OFFSET, MAX_FILE_INFO, file_readfat};
 
 mod asm;
 mod descriptor_table;
@@ -444,6 +444,12 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     TIMER_MANAGER.lock().init_timer(timer_index, fifo_addr, 1);
     TIMER_MANAGER.lock().set_time(timer_index, 50);
 
+    let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MemMan) };
+
+    let fat_addr = memman.alloc_4k(4 * 2880).unwrap();
+    let fat = unsafe { &mut *(fat_addr as *mut [u32; 2880]) };
+    file_readfat(fat, unsafe { *((ADR_DISKIMG + 0x000200) as *const [u8; 2880 * 4]) });
+
     macro_rules! display_error {
         ($error: tt, $cursor_y: tt) => {
             write_with_bg!(
@@ -550,7 +556,6 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
                         match cmd {
                             "mem" => {
                                 // memコマンド
-                                let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MemMan) };
                                 write_with_bg!(
                                     sheet_manager,
                                     sheet_index,
@@ -686,10 +691,11 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
                                         }
                                         if let Some(finfo) = target_finfo {
                                             // ファイルが見つかった場合
-                                            let content_length = finfo.size;
+                                            let content_addr = memman.alloc_4k(finfo.size).unwrap() as usize;
+                                            finfo.file_loadfile(content_addr, fat, ADR_DISKIMG + 0x003e00);
                                             let mut cursor_x = 8;
-                                            for c in 0..content_length {
-                                                let p = unsafe { *((finfo.clustno as usize * 512 + 0x003e00 + ADR_DISKIMG + c as usize) as *const u8) };
+                                            for c in 0..finfo.size {
+                                                let p = unsafe { *((content_addr + c as usize) as *const u8) };
                                                 if p == 0x09 {
                                                     // タブ
                                                     loop {

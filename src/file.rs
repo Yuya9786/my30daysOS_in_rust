@@ -14,3 +14,36 @@ pub struct FileInfo {
     pub clustno: u16,
     pub size: u32,
 }
+
+impl FileInfo {
+    pub fn file_loadfile(&self, buf_addr: usize, fat: &[u32; 2880], img_addr: usize) {
+        let mut size = self.size as usize;
+        let mut buf_addr = buf_addr as usize;
+        let mut clustno = self.clustno as usize;
+        loop {
+            if size <= 512 {
+                for i in 0..size {
+                    let buf = unsafe { &mut *((buf_addr + i) as *mut u8) };
+                    *buf = unsafe { *((img_addr + clustno * 512 + i) as *const u8) };
+                }
+                break;
+            }
+            for i in 0..512 {
+                let buf = unsafe { &mut *((buf_addr + i) as *mut u8) };
+                *buf = unsafe { *((img_addr + clustno * 512 + i) as *const u8) };
+            }
+            size -= 512;
+            buf_addr += 512;
+            clustno = fat[clustno] as usize;
+        }
+    }
+}
+
+pub fn file_readfat(fat: &mut [u32; 2880], img: [u8; 2880 * 4]) {
+    let mut j = 0;
+    for i in (0..2880).step_by(2) {
+        fat[i + 0] = ((img[j + 0] as u32) | (img[j + 1] as u32) << 8) & 0xfff;
+        fat[i + 1] = ((img[j + 1] as u32) >> 4 | (img[j + 2] as u32) << 4) & 0xfff;
+        j += 3;
+    }
+}
