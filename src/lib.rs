@@ -42,6 +42,7 @@ static mut SHEET_MANAGER_ADDR: usize = 0;
 const CONSOLE_CURSOR_ON: u32 = 2;
 const CONSOLE_CURSOR_OFF: u32 = 3;
 const CONSOLE_ENTER: u32 = 10;
+const CONSOLE_BACKSPACE: u32 = 8;
 
 #[no_mangle]
 #[start]
