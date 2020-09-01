@@ -21,7 +21,7 @@ use crate::{write_with_bg, SHEET_MANAGER_ADDR, CONSOLE_ENTER, CONSOLE_BACKSPACE}
 
 pub const MIN_CURSOR_X: isize = 16;
 pub const MIN_CURSOR_Y: isize = 28;
-pub const MAX_CURSOR_X: isize = 240;
+pub const MAX_CURSOR_X: isize = 248;
 pub const MAX_CURSOR_Y: isize = 140;
 pub const CONSOLE_ADDR: usize = 0xfec;
 pub const CS_BASE_ADDR: usize = 0xfe8;
@@ -43,7 +43,7 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
 
     let mut console = Console::new(sheet_index, sheet_manager_addr);
     {
-        let ptr = unsafe { &mut *(0x0fec as *mut usize) };
+        let ptr = unsafe { &mut *(CONSOLE_ADDR as *mut usize) };
         *ptr = &console as *const Console as usize;
     }
 
@@ -58,7 +58,8 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     file_readfat(fat, unsafe { *((ADR_DISKIMG + 0x000200) as *const [u8; 2880 * 4]) });
     
     // プロンプト表示
-    console.put_chr(b'>', true);
+    console.show_prompt();
+    console.cursor_x = 16;
 
     loop {
         cli();
@@ -104,8 +105,8 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
 
                         console.run_cmd(fat, memtotal);
                         // プロンプト表示
-                        console.put_chr(b'>', true);
-                        // cursor_x = 16;
+                        console.show_prompt();
+                        console.cursor_x = 16;
                     } else {
                         // 一般文字
                         if console.cursor_x < MAX_CURSOR_X {
@@ -219,6 +220,13 @@ impl Console {
         if move_cursor {
             self.cursor_x += 8;
         }
+    }
+
+    pub fn show_prompt(&mut self) {
+        let cx = self.cursor_x;
+        self.cursor_x = 8;
+        self.put_chr(b'>', true);
+        self.cursor_x = cx;
     }
 
     pub fn cons_newline(&mut self) {
@@ -451,6 +459,10 @@ impl Console {
         let mut finfo = search_file(filename);
         if let Some(finfo) = finfo {
             let content_addr = memman.alloc_4k(finfo.size).unwrap() as usize;
+            {
+                let ptr = unsafe { &mut *(CS_BASE_ADDR as *mut usize) };
+                *ptr = content_addr;
+            }
             finfo.file_loadfile(content_addr, fat, ADR_DISKIMG + 0x003e00);
             let gdt = unsafe { &mut *((ADR_GDT + 1003 * 8) as *mut SegmentDescriptor) };    // 1,2,3はdescriptor_table.rsで，1002まではmt.rsで使用済み
             *gdt = SegmentDescriptor::new(finfo.size - 1, content_addr as i32, AR_CODE32_ER);
@@ -478,7 +490,6 @@ impl Console {
             "{}",
             error_massage
         );
-        self.cons_newline();
         self.cons_newline();
     }
 }
