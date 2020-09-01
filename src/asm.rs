@@ -115,6 +115,13 @@ pub extern "C" fn farjmp(eip: i32, cs: i32) {
     }
 }
 
+#[naked]
+pub extern "C" fn farcall(eip: i32, cs: i32) {
+    unsafe {
+        asm!("LCALL *($0)" :: "r"(&Jump {eip, cs}));
+    }
+}
+
 #[macro_export]
 macro_rules! handler {
     ($name: ident) => {{
@@ -146,4 +153,32 @@ macro_rules! handler {
         }
         wrapper
     }}
+}
+
+#[naked]
+pub extern "C" fn interrupt_print_char() {
+    use crate::console::CONSOLE_ADDR;
+    unsafe {
+        asm!("STI" : : : : "intel");
+        asm!("PUSH 1" : : : : "intel");
+        asm!("AND EAX, 0xff" : : : : "intel");
+        asm!("PUSH EAX" : : : : "intel");
+        asm!("PUSH DWORD PTR [$0]" : : "i"(CONSOLE_ADDR) : : "intel");
+        asm!("CALL console_put_char" : : : : "intel");
+        asm!("ADD ESP, 12" : : : : "intel");
+        asm!("IRETD" : : : : "intel");
+    }
+}
+
+#[naked]
+pub extern "C" fn interrupt_bin_api() {
+    unsafe {
+        asm!("STI
+              PUSHAD
+              PUSHAD
+              CALL bin_api
+              ADD ESP, 32
+              POPAD
+              IRETD" : : : : "intel");
+    }
 }

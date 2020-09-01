@@ -12,13 +12,13 @@ $(OUTPUT_DIR)/%.bin: $(ASM_DIR)/%.asm Makefile $(OUTPUT_DIR_KEEP)
 $(OUTPUT_DIR)/haribote.sys : $(OUTPUT_DIR)/asmhead.bin $(OUTPUT_DIR)/kernel.bin
 	cat $^ > $@
 
-$(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys $(OUTPUT_DIR)/hlt.bin Makefile
+$(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys $(OUTPUT_DIR)/hlt.bin $(OUTPUT_DIR)/hello.bin $(OUTPUT_DIR)/hello2.bin Makefile
 	mformat -f 1440 -C -B $< -i $@ ::
 	mcopy -i $@ $(OUTPUT_DIR)/haribote.sys ::
-	mcopy -i $@ src/lib.rs ::
-	mcopy -i $@ asm/ipl10.asm ::
 	mcopy -i $@ src/test.txt ::
 	mcopy -i $@ $(OUTPUT_DIR)/hlt.bin ::
+	mcopy -i $@ $(OUTPUT_DIR)/hello.bin ::
+	mcopy -i $@ $(OUTPUT_DIR)/hello2.bin ::
 
 asm :
 	make $(OUTPUT_DIR)/ipl.bin 
@@ -36,6 +36,9 @@ debug :
 
 clean :
 	rm -rf $(OUTPUT_DIR)/*
+
+$(OUTPUT_DIR)/nasmfunc.o: $(ASM_DIR)/nasmfunc.asm Makefile $(OUTPUT_DIR_KEEP)
+	nasm -f elf $< -o $@
 
 $(OUTPUT_DIR)/kernel.bin: $(OUTPUT_DIR)/libharibote_os.a $(OUTPUT_DIR_KEEP)
 	i686-unknown-linux-gnu-ld -v -nostdlib -Tdata=0x00310000 -Thrb.ld $< -o $@

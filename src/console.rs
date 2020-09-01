@@ -2,7 +2,7 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::str::from_utf8;
 
-use crate::asm::{cli, out8, sti, farjmp};
+use crate::asm::{cli, out8, sti, farcall};
 use crate::descriptor_table::{SegmentDescriptor, ADR_GDT, AR_CODE32_ER};
 use crate::fifo::Fifo;
 use crate::interrupt::PORT_KEYDAT;
@@ -23,6 +23,8 @@ pub const MIN_CURSOR_X: isize = 16;
 pub const MIN_CURSOR_Y: isize = 28;
 pub const MAX_CURSOR_X: isize = 240;
 pub const MAX_CURSOR_Y: isize = 140;
+pub const CONSOLE_ADDR: usize = 0xfec;
+pub const CS_BASE_ADDR: usize = 0xfe8;
 
 pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     let task_manager = unsafe { &mut *(TASK_MANAGER_ADDR as *mut TaskManager) };
@@ -40,6 +42,10 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     let sheet = sheet_manager.sheets_data[sheet_index];
 
     let mut console = Console::new(sheet_index, sheet_manager_addr);
+    {
+        let ptr = unsafe { &mut *(0x0fec as *mut usize) };
+        *ptr = &console as *const Console as usize;
+    }
 
     let timer_index = TIMER_MANAGER.lock().alloc().unwrap();
     TIMER_MANAGER.lock().init_timer(timer_index, fifo_addr, 1);
@@ -132,6 +138,45 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn bin_api(
+    _edi: i32,
+    _esi: i32,
+    _ebp: i32,
+    _esp: i32,
+    ebx: i32,
+    edx: i32,
+    ecx: i32,
+    eax: i32,
+) {
+    let cs_base = unsafe { *(CS_BASE_ADDR as *const usize) };
+    let console_addr = unsafe { *(CONSOLE_ADDR as *const usize) };
+    let console = unsafe { &mut *(console_addr as *mut Console) };
+    if edx == 1 {
+        // 1文字出力
+        console.put_chr(eax as u8, true);
+    } else if edx == 2 {
+        // 0がくるまで1文字ずつ出力
+        let mut i = 0;
+        loop {
+            let chr = unsafe { *((ebx as usize + i as usize + cs_base) as *const u8) };
+            if chr == 0 {
+                break;
+            }
+            console.put_chr(chr, true);
+            i += 1;
+        }
+    } else if edx == 3 {
+        // 指定した文字数出力
+        for i in 0..ecx {
+            let chr = unsafe { *((ebx as usize + i as usize + cs_base) as *const u8) };
+            console.put_chr(chr, true);
+        }
+    }
+}
+
+
+#[repr(C, packed)]
 pub struct Console {
     pub cursor_x: isize,
     pub cursor_y: isize,
@@ -155,7 +200,7 @@ impl Console {
         }
     }
 
-    pub fn put_chr(&mut self, chr: u8, move_cursor: bool) {
+    pub extern "C" fn put_chr(&mut self, chr: u8, move_cursor: bool) {
         let sheet_manager = unsafe { &mut *(self.sheet_manager_addr as *mut SheetManager) };
         let sheet = sheet_manager.sheets_data[self.sheet_index];
         write_with_bg!(
@@ -233,23 +278,7 @@ impl Console {
             "ls" => self.cmd_ls(),
             "cat" => self.cmd_cat(cmdline_strs, fat),
             "hlt" => self.cmd_hlt(fat),
-            _ => {
-                write_with_bg!(
-                    sheet_manager,
-                    self.sheet_index,
-                    sheet.width,
-                    sheet.height,
-                    8,
-                    self.cursor_y,
-                    Color::White,
-                    Color::Black,
-                    22,
-                    "Unknown Command: {}",
-                    cmd_str
-                );
-                self.cons_newline();
-                self.cons_newline();
-            },
+            _ => self.cmd_app(&cmd, fat),
         }
         
     }
@@ -403,14 +432,31 @@ impl Console {
 
     pub fn cmd_hlt(&mut self, fat: &[u32; MAX_FAT]) {
         let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MemMan) };
-        let target_finfo = search_file(b"hlt.bin");
+        let mut target_finfo = search_file(b"hlt.bin");
         if let Some(finfo) = target_finfo {
             let content_addr = memman.alloc_4k(finfo.size).unwrap() as usize;
             finfo.file_loadfile(content_addr, fat, ADR_DISKIMG + 0x003e00);
-            let gdt = unsafe { &mut *((ADR_GDT + 1003 * 8) as *mut SegmentDescriptor) };
+            let gdt = unsafe { &mut *((ADR_GDT + 1003 * 8) as *mut SegmentDescriptor) };    // 1,2,3はdescriptor_table.rsで，1002まではmt.rsで使用済み
             *gdt = SegmentDescriptor::new(finfo.size - 1, content_addr as i32, AR_CODE32_ER);
-            farjmp(0, 1003 * 8);
+            farcall(0, 1003 * 8);
             memman.free_4k(content_addr as u32, finfo.size).unwrap();
+            self.cons_newline();
+        } else {
+            self.display_error("File not found");
+        }
+    }
+
+    pub fn cmd_app<'a>(&mut self, filename: &'a [u8], fat: &[u32; MAX_FAT]) {
+        let memman = unsafe { &mut *(MEMMAN_ADDR as *mut MemMan) };
+        let mut finfo = search_file(filename);
+        if let Some(finfo) = finfo {
+            let content_addr = memman.alloc_4k(finfo.size).unwrap() as usize;
+            finfo.file_loadfile(content_addr, fat, ADR_DISKIMG + 0x003e00);
+            let gdt = unsafe { &mut *((ADR_GDT + 1003 * 8) as *mut SegmentDescriptor) };    // 1,2,3はdescriptor_table.rsで，1002まではmt.rsで使用済み
+            *gdt = SegmentDescriptor::new(finfo.size - 1, content_addr as i32, AR_CODE32_ER);
+            farcall(0, 1003 * 8);
+            memman.free_4k(content_addr as u32, finfo.size).unwrap();
+            self.cons_newline();
         } else {
             self.display_error("File not found");
         }
@@ -495,3 +541,9 @@ fn search_file(filename: &[u8]) -> Option<FileInfo> {
 
     target_finfo
 }
+
+#[no_mangle]
+pub extern "C" fn console_put_char(console: &mut Console, char_num: u8, move_cursor: bool) {
+    console.put_chr(char_num, move_cursor);
+}
+
