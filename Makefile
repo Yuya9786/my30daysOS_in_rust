@@ -18,10 +18,12 @@ $(OUTPUT_DIR)/haribote.sys: $(OUTPUT_DIR)/asmhead.bin $(OUTPUT_DIR)/kernel.bin
 
 $(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys $(OUTPUT_DIR)/hlt.bin $(OUTPUT_DIR)/hello.bin $(OUTPUT_DIR)/hello2.bin $(OUTPUT_DIR)/hello3.hrb Makefile
 	mformat -f 1440 -C -B $< -i $@ ::
-	mcopy -i $@ src/test.txt ::
+	mcopy -i $@ $(OUTPUT_DIR)/haribote.sys ::
 	mcopy -i $@ $(OUTPUT_DIR)/hlt.bin ::
 	mcopy -i $@ $(OUTPUT_DIR)/hello.bin ::
 	mcopy -i $@ $(OUTPUT_DIR)/hello2.bin ::
+	mcopy -i $@ $(OUTPUT_DIR)/hello3.hrb ::
+	
 
 $(OUTPUT_DIR)/%.o : $(CSRC)/%.c Makefile $(OUTPUT_DIR_KEEP)
 	x86_64-elf-gcc -c -m32 -o $@ $<
