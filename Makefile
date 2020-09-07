@@ -13,7 +13,7 @@ $(OUTPUT_DIR)/a_nasm.bin: $(ASM_DIR)/a_nasm.asm Makefile $(OUTPUT_DIR_KEEP)
 $(OUTPUT_DIR)/%.bin: $(ASM_DIR)/%.asm Makefile $(OUTPUT_DIR_KEEP)
 	nasm $< -o $@
 
-$(OUTPUT_DIR)/haribote.sys : $(OUTPUT_DIR)/asmhead.bin $(OUTPUT_DIR)/kernel.bin
+$(OUTPUT_DIR)/haribote.sys: $(OUTPUT_DIR)/asmhead.bin $(OUTPUT_DIR)/kernel.bin
 	cat $^ > $@
 
 $(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys $(OUTPUT_DIR)/hlt.bin $(OUTPUT_DIR)/hello.bin $(OUTPUT_DIR)/hello2.bin $(OUTPUT_DIR)/hello3.hrb Makefile
@@ -22,7 +22,6 @@ $(IMG) : $(OUTPUT_DIR)/ipl10.bin $(OUTPUT_DIR)/haribote.sys $(OUTPUT_DIR)/hlt.bi
 	mcopy -i $@ $(OUTPUT_DIR)/hlt.bin ::
 	mcopy -i $@ $(OUTPUT_DIR)/hello.bin ::
 	mcopy -i $@ $(OUTPUT_DIR)/hello2.bin ::
-	mcopy -i $@ $(OUTPUT_DIR)/hello3.hrb ::
 
 $(OUTPUT_DIR)/%.o : $(CSRC)/%.c Makefile $(OUTPUT_DIR_KEEP)
 	x86_64-elf-gcc -c -m32 -o $@ $<
