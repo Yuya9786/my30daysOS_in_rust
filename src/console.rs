@@ -90,7 +90,8 @@ pub extern "C" fn console_task(sheet_index: usize, memtotal: u32) {
                 let key = (i - KEYBOARD_OFFSET) as u8;
                 if key != 0 {
                     if key == 0x0e {
-                        if console.cursor_x > MIN_CURSOR_X + 8 {
+                        console.put_chr(key, true);
+                        if console.cursor_x > MIN_CURSOR_X {
                             console.put_chr(b' ', false);
                             console.cmdline[console.cursor_x as usize / 8 - 2] = b' ';
                             console.cursor_x -= 8;
@@ -466,6 +467,34 @@ impl Console {
             finfo.file_loadfile(content_addr, fat, ADR_DISKIMG + 0x003e00);
             let gdt = unsafe { &mut *((ADR_GDT + 1003 * 8) as *mut SegmentDescriptor) };    // 1,2,3はdescriptor_table.rsで，1002まではmt.rsで使用済み
             *gdt = SegmentDescriptor::new(finfo.size - 1, content_addr as i32, AR_CODE32_ER);
+            let mut code: [u8; 4] = [0; 4];
+            unsafe {
+                for i in 0..4 {
+                    let s =  &*((content_addr + 4 + i) as *const u8);
+                    code[i] = *s;
+                }
+            }
+            let code = from_utf8(&code);
+            if let Ok(code) = code {
+                if finfo.size >= 8 && code == "Hari" {
+                    for i in 0..6 {
+                        let c = unsafe { &mut *((content_addr + i) as *mut u8) };
+                        *c = if i == 0 {
+                            0xe8
+                        } else if i == 1 {
+                            0x16
+                        } else if i == 2 {
+                            0x00
+                        } else if i == 3 {
+                            0x00
+                        } else if i == 4 {
+                            0x00
+                        } else {
+                            0xcb
+                        };
+                    }
+                }
+            }
             farcall(0, 1003 * 8);
             memman.free_4k(content_addr as u32, finfo.size).unwrap();
             self.cons_newline();
